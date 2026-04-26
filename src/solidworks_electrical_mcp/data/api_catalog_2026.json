@@ -1,5 +1,6 @@
 {
-  "schema": 1,
+  "schema": 2,
+  "version": "2026",
   "doc_base": "https://help.solidworks.com/2026/english/api/sldworkselecapihelp/",
   "interfaces": [
     {

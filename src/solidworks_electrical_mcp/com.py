@@ -20,12 +20,16 @@ may differ from the 2026 docs the catalogue is built from).
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 # COM ProgID for the SW Electrical factory. The unversioned form picks the
 # latest install; ``EwAPI.EwInteropFactoryX.<year>.<sp>`` pins a specific
 # release (e.g. ``EwAPI.EwInteropFactoryX.2025.5``).
 FACTORY_PROGID = "EwAPI.EwInteropFactoryX"
+VERSIONED_PROGID_RE = re.compile(
+    r"^EwAPI\.EwInteropFactoryX\.(\d{4})\.(\d+)$"
+)
 
 # Environment variable read by ``connect_application`` if no explicit key is
 # passed. Lets the user wire a licence key in once via Claude Code's MCP env
@@ -149,3 +153,39 @@ _singleton = ElectricalApp()
 
 def app() -> ElectricalApp:
     return _singleton
+
+
+def installed_versions() -> list[tuple[int, int]]:
+    """Probe HKLM\\SOFTWARE\\Classes for ``EwAPI.EwInteropFactoryX.<y>.<sp>``
+    keys and return the parsed (year, service-pack) pairs sorted newest-first.
+
+    Returns an empty list if the registry key is missing (SW Electrical not
+    installed) or winreg is unavailable (non-Windows).
+    """
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return []
+    out: list[tuple[int, int]] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\Classes") as root:
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                m = VERSIONED_PROGID_RE.match(name)
+                if m:
+                    out.append((int(m.group(1)), int(m.group(2))))
+                i += 1
+    except OSError:
+        return []
+    return sorted(set(out), reverse=True)
+
+
+def detect_installed_version() -> str | None:
+    """Return the major-year of the newest installed SW Electrical, as a
+    string (e.g. ``"2025"``), or ``None`` if nothing is installed."""
+    vs = installed_versions()
+    return str(vs[0][0]) if vs else None

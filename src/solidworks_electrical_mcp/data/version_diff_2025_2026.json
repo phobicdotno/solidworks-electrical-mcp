@@ -1,0 +1,386 @@
+{
+  "old_version": "2025",
+  "new_version": "2026",
+  "added_interfaces": [
+    "IEwCircuitTypeManagerX",
+    "IEwCircuitTypeX",
+    "IEwProgressX",
+    "IEwProjectTranslateX",
+    "IEwSwCabinetX"
+  ],
+  "removed_interfaces": [],
+  "interface_changes": [
+    {
+      "interface": "IEwApplicationX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "setEwProjectCurrent"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwCableReferenceX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getLength",
+        "setLength"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwClassX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getClassificationType",
+        "setClassificationType"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getClassID",
+          "old_summary": "Return the class node Id, unique within the classification.",
+          "new_summary": "Return the class node ID, unique within the classification."
+        },
+        {
+          "member": "setClassID",
+          "old_summary": "Set class id of current node in classification.",
+          "new_summary": "Deprecated since 2025 SP3, use IEwClassX setClassificationID() interface Set class ID of current node in classification."
+        }
+      ]
+    },
+    {
+      "interface": "IEwClassificationManagerX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "findEwClassByID",
+          "old_summary": "Get node find by id in current classification.",
+          "new_summary": "Get node find by ID in current classification."
+        }
+      ]
+    },
+    {
+      "interface": "IEwClassificationX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [
+        {
+          "member": "findEwClassByID",
+          "old_signature": "IEwClassX findEwClassByID (LONG lClassId, EwErrorCode *errorCode)",
+          "new_signature": "IEwClassX findEwClassByID (LONG lClassID, EwErrorCode *errorCode)"
+        },
+        {
+          "member": "moveClass",
+          "old_signature": "EwErrorCode moveClass (long lClassId, long lClassIdParent)",
+          "new_signature": "EwErrorCode moveClass (long lClassID, long lClassIDParent)"
+        }
+      ],
+      "summary_changes": [
+        {
+          "member": "get3DPartName",
+          "old_summary": "Get a classification 3d part name.",
+          "new_summary": "Get a classification 3D part name."
+        },
+        {
+          "member": "newEwClass",
+          "old_summary": "Create a new node in electrical classification.",
+          "new_summary": "Create a new class in classification."
+        },
+        {
+          "member": "set3DPartName",
+          "old_summary": "Set a classification 3d part name.",
+          "new_summary": "Set a classification 3D part name."
+        }
+      ]
+    },
+    {
+      "interface": "IEwDialogProgressX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getFirstProgress",
+        "getSecondProgress"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwEXCELImportLibraryX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getUpdateExistingData",
+        "setUpdateExistingData"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwEnvironmentX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getFolderPath",
+          "old_summary": "Return folder path associated to enumeration type EwEnvironmentFolderPathValue.",
+          "new_summary": "Return folder path associated to enumeration type EwEnvironmentFolderPathValue ."
+        },
+        {
+          "member": "getSOLIDWORKSFolderPath",
+          "old_summary": "Return SOLIDWORKS folder path where SOLIDWORKS files are stored.",
+          "new_summary": "Return SOLIDWORKS Design folder path where SOLIDWORKS Design files are stored."
+        }
+      ]
+    },
+    {
+      "interface": "IEwManagerDialogX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getColumnOrderArray",
+        "getColumnVisible",
+        "setColumnOrderArray",
+        "setColumnVisible"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectComponentManagerX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "findEwProjectComponentCircuitByID",
+          "old_summary": "return an EwProjectComponentCircuitX according to an Id",
+          "new_summary": "return an EwProjectComponentCircuitX according to an ID"
+        },
+        {
+          "member": "getEwProjectComponentArray",
+          "old_summary": "Get all the Component objects ID in the project.",
+          "new_summary": "Get all the Component objects in the project."
+        },
+        {
+          "member": "getEwProjectComponentCircuitArray",
+          "old_summary": "Get the array of IEwProjectComponentCircuitX ID of the current project.",
+          "new_summary": "Get the array of IEwProjectComponentCircuitX of the current project."
+        }
+      ]
+    },
+    {
+      "interface": "IEwProjectComponentX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getEwProjectComponentCircuitArray",
+        "getEwProjectManufacturerPartArray",
+        "getEwProjectManufacturerPartIDArray"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectEntity3DX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getSWID",
+          "old_summary": "Return the ID of the component in SOLIDWORKS.",
+          "new_summary": "Return the ID of the component in SOLIDWORKS Design."
+        }
+      ]
+    },
+    {
+      "interface": "IEwProjectExportPDFX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "getEwPDFFileStructure",
+        "getFileNameFormula",
+        "getFolderNameFormula",
+        "getTargetFolder",
+        "setEwPDFFileStructure",
+        "setFileNameFormula",
+        "setFolderNameFormula",
+        "setTargetFolder"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getExportOnePDFFileByBook",
+          "old_summary": "Return true to export one PDF file by book.",
+          "new_summary": ""
+        },
+        {
+          "member": "setExportOnePDFFileByBook",
+          "old_summary": "Update with true to export one PDF file by book.",
+          "new_summary": ""
+        }
+      ]
+    },
+    {
+      "interface": "IEwProjectManufacturerPartX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getEwManufacturerPartType",
+          "old_summary": "Get the base type (EwManufacturerPartType enum) of the current manufacturer part.",
+          "new_summary": "Get the base type ( EwManufacturerPartType enum) of the current manufacturer part."
+        },
+        {
+          "member": "setEwManufacturerPartType",
+          "old_summary": "Set the base type (EwManufacturerPartType enum) of the current manufacturer part.",
+          "new_summary": "Set the base type ( EwManufacturerPartType enum) of the current manufacturer part."
+        }
+      ]
+    },
+    {
+      "interface": "IEwProjectTagObjectX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [
+        "getDescription",
+        "setDescription"
+      ],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectUpdateReplaceDataX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "setForceCompatibilityType",
+        "setStrReplaceConfigName"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectWireStyleBase",
+      "summary_changed": true,
+      "old_summary": "Use this interface to manage Wire Style inside a project.",
+      "new_summary": "Use this interface to manage Wire styles used to draw wires in a scheme.",
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectWireStyleSynopticX",
+      "summary_changed": true,
+      "old_summary": "Use this interface to manage Wire Style inside a project.",
+      "new_summary": "Use this interface to manage Wire style to draw cables inside Wiring line diagram.",
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectWireStyleX",
+      "summary_changed": true,
+      "old_summary": "Use this interface to manage Wire Style inside a project.",
+      "new_summary": "Use this interface to manage Wire styles used to draw wires in a scheme.",
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    },
+    {
+      "interface": "IEwProjectWireX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": [
+        {
+          "member": "getComponentCircuitID",
+          "old_summary": "Get the ID of the EwProjectComponentCircuitX at the origin or destination of this wire corresponding to the EwWireExtremityType.",
+          "new_summary": "Get the ID of the EwProjectComponentCircuitX at the origin or destination of this wire corresponding to the EwWireExtremityType ."
+        },
+        {
+          "member": "getComponentID",
+          "old_summary": "Get the ID of the EwProjectComponentX at the origin or destination of this wire corresponding to the EwWireExtremityType.",
+          "new_summary": "Get the ID of the EwProjectComponentX at the origin or destination of this wire corresponding to the EwWireExtremityType ."
+        },
+        {
+          "member": "getComponentTerminalNumber",
+          "old_summary": "Get the number associated to the terminal connected to the origin or the destination of this wire corresponding to the EwWireExtremityType.",
+          "new_summary": "Get the number associated to the terminal connected to the origin or the destination of this wire corresponding to the EwWireExtremityType ."
+        }
+      ]
+    },
+    {
+      "interface": "IEwProjectX",
+      "summary_changed": false,
+      "old_summary": null,
+      "new_summary": null,
+      "added_members": [
+        "isOpenByAnother",
+        "isOpenByMe",
+        "newEwProjectTranslate"
+      ],
+      "removed_members": [],
+      "signature_changes": [],
+      "summary_changes": []
+    }
+  ],
+  "totals": {
+    "interfaces_added": 5,
+    "interfaces_removed": 0,
+    "interfaces_changed": 21
+  }
+}

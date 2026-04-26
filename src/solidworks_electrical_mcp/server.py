@@ -1,23 +1,31 @@
 """FastMCP server exposing SOLIDWORKS Electrical via COM, indexed by the
-SOLIDWORKS 2026 API help.
+SOLIDWORKS API help catalogues for one or more major releases.
 
 Tools exposed
 -------------
-search_api(query, limit=25)
-    Search the catalog of SW Electrical interfaces and members.
+list_versions()
+    Versions for which a doc catalog ships, plus which versions are
+    installed locally and which version is the current default.
 
-get_api(interface, member=None)
-    Return the doc summary, full member list, or one member's signature/URL.
+list_interfaces(version=None)
+    All interface names known to a given catalog (defaults to current).
 
-connect()
-    Attach to the running SOLIDWORKS Electrical COM server.
+search_api(query, limit=25, version=None)
+    Search interfaces + members in the given catalog.
 
-call(path, args=None)
-    Resolve a dotted attribute path on the app and read or invoke it.
-    e.g. ``call("ApplicationSettings.Language")``.
+get_api(interface, member=None, version=None)
+    One interface (or one member) from the given catalog.
 
-list_interfaces()
-    Return all interface names known to the catalog.
+compare_versions(interface, member=None)
+    Cross-version diff for one interface (or one of its members) across
+    every shipped catalog.
+
+connect(license_key=None)
+    Dispatch the SW Electrical COM factory and (if a key is available)
+    attach an IEwApplicationX.
+
+call(path, args=None, root='application')
+    Late-bound dotted attribute access on the live COM surface.
 """
 
 from __future__ import annotations
@@ -32,46 +40,84 @@ from . import com as com_mod
 mcp = FastMCP(
     name="solidworks-electrical-mcp",
     instructions=(
-        "Drives SOLIDWORKS Electrical via COM (pywin32). The interface and "
-        "member catalog is sourced from the SOLIDWORKS 2026 API help "
-        "(https://help.solidworks.com/2026/english/api/sldworkselecapihelp/). "
-        "Use search_api / get_api to discover what is callable, then call() to "
-        "invoke it. The user must run the scraper once to populate the "
-        "catalog: `python -m solidworks_electrical_mcp.scrape`."
+        "Drives SOLIDWORKS Electrical via COM (pywin32) and indexes its API "
+        "via doc catalogues sourced from help.solidworks.com. Multiple major "
+        "releases are supported simultaneously — list_versions() reports "
+        "what is shipped and what is installed; every other tool that needs "
+        "a catalog accepts an optional version= parameter."
     ),
 )
 
-_catalog = catalog_mod.load()
+_catalogs: dict[str, catalog_mod.Catalog] = {
+    v: catalog_mod.load(v) for v in catalog_mod.available_versions()
+}
+_default_version = (
+    com_mod.detect_installed_version()
+    if com_mod.detect_installed_version() in _catalogs
+    else (max(_catalogs) if _catalogs else catalog_mod.DEFAULT_VERSION)
+)
+
+
+def _resolve_version(version: str | None) -> tuple[str, catalog_mod.Catalog | None]:
+    v = version or _default_version
+    return v, _catalogs.get(v)
+
+
+def _missing_catalog(v: str) -> dict:
+    return {
+        "error": f"No catalog shipped for version {v!r}",
+        "available_versions": sorted(_catalogs),
+    }
 
 
 @mcp.tool
-def list_interfaces() -> list[str]:
-    """Return every interface name known to the catalog."""
-    return sorted(i.name for i in _catalog.interfaces)
+def list_versions() -> dict:
+    """Catalog and install state for every supported version."""
+    installed = com_mod.installed_versions()
+    return {
+        "default": _default_version,
+        "shipped_catalogs": sorted(_catalogs),
+        "installed_versions": [f"{y}.{sp}" for y, sp in installed],
+        "installed_majors": sorted({str(y) for y, _ in installed}),
+    }
 
 
 @mcp.tool
-def search_api(query: str, limit: int = 25) -> list[dict]:
-    """Search the SW Electrical API catalog (interfaces + members).
-
-    Returns ranked hits with kind, interface, optional member, signature,
-    summary and a link back to the master help page.
-    """
-    return _catalog.search(query, limit=limit)
+def list_interfaces(version: str | None = None) -> list[str] | dict:
+    """All interface names known to the catalog for the given version."""
+    v, cat = _resolve_version(version)
+    if cat is None:
+        return _missing_catalog(v)
+    return sorted(i.name for i in cat.interfaces)
 
 
 @mcp.tool
-def get_api(interface: str, member: str | None = None) -> dict:
-    """Look up one interface (or one member of one interface) in the catalog."""
-    iface = _catalog.get_interface(interface)
+def search_api(query: str, limit: int = 25,
+               version: str | None = None) -> list[dict] | dict:
+    """Ranked search across interfaces and members in the given catalog."""
+    v, cat = _resolve_version(version)
+    if cat is None:
+        return _missing_catalog(v)
+    return cat.search(query, limit=limit)
+
+
+@mcp.tool
+def get_api(interface: str, member: str | None = None,
+            version: str | None = None) -> dict:
+    """Look up an interface (or one of its members) in the given catalog."""
+    v, cat = _resolve_version(version)
+    if cat is None:
+        return _missing_catalog(v)
+    iface = cat.get_interface(interface)
     if iface is None:
-        return {"error": f"Unknown interface {interface!r}",
+        return {"error": f"Unknown interface {interface!r} in {v}",
                 "hint": "Use list_interfaces() to see what is known."}
     if member is None:
         return {
+            "version": v,
             "interface": iface.name,
             "summary": iface.summary,
-            "url": iface.url,
+            "url": iface.url(v),
             "members": [
                 {"name": m.name, "kind": m.kind, "signature": m.signature,
                  "summary": m.summary}
@@ -81,15 +127,116 @@ def get_api(interface: str, member: str | None = None) -> dict:
     for m in iface.members:
         if m.name.lower() == member.lower():
             return {
+                "version": v,
                 "interface": iface.name,
                 "member": m.name,
                 "kind": m.kind,
                 "signature": m.signature,
                 "summary": m.summary,
-                "url": m.url(iface.page),
+                "url": m.url(iface.page, v),
             }
-    return {"error": f"Member {member!r} not found on {iface.name}",
+    return {"error": f"Member {member!r} not found on {iface.name} in {v}",
             "available": [m.name for m in iface.members]}
+
+
+@mcp.tool
+def compare_versions(interface: str,
+                     member: str | None = None) -> dict:
+    """Cross-version view of one interface (or one of its members).
+
+    Returns the per-version state plus a flat changes block (added /
+    removed / signature changes / summary changes) computed pairwise across
+    adjacent shipped versions.
+    """
+    versions = sorted(_catalogs)
+    if not versions:
+        return {"error": "No catalogues are loaded."}
+
+    per_version: dict[str, Any] = {}
+    for v in versions:
+        cat = _catalogs[v]
+        iface = cat.get_interface(interface)
+        if iface is None:
+            per_version[v] = {"present": False}
+            continue
+        if member is None:
+            per_version[v] = {
+                "present": True,
+                "summary": iface.summary,
+                "member_count": len(iface.members),
+                "url": iface.url(v),
+            }
+        else:
+            hit = next((m for m in iface.members
+                        if m.name.lower() == member.lower()), None)
+            if hit is None:
+                per_version[v] = {"present": False, "interface_present": True}
+            else:
+                per_version[v] = {
+                    "present": True,
+                    "kind": hit.kind,
+                    "signature": hit.signature,
+                    "summary": hit.summary,
+                    "url": hit.url(iface.page, v),
+                }
+
+    changes: list[dict] = []
+    for older, newer in zip(versions, versions[1:]):
+        d = catalog_mod.diff(_catalogs[older], _catalogs[newer])
+        if interface in d["added_interfaces"]:
+            changes.append({"between": f"{older}->{newer}",
+                            "kind": "interface_added"})
+        if interface in d["removed_interfaces"]:
+            changes.append({"between": f"{older}->{newer}",
+                            "kind": "interface_removed"})
+        for ic in d["interface_changes"]:
+            if ic["interface"] != interface:
+                continue
+            if member is None:
+                if ic["summary_changed"]:
+                    changes.append({"between": f"{older}->{newer}",
+                                    "kind": "interface_summary",
+                                    "old": ic["old_summary"],
+                                    "new": ic["new_summary"]})
+                for a in ic["added_members"]:
+                    changes.append({"between": f"{older}->{newer}",
+                                    "kind": "member_added", "member": a})
+                for r in ic["removed_members"]:
+                    changes.append({"between": f"{older}->{newer}",
+                                    "kind": "member_removed", "member": r})
+            else:
+                if member in ic["added_members"]:
+                    changes.append({"between": f"{older}->{newer}",
+                                    "kind": "member_added", "member": member})
+                if member in ic["removed_members"]:
+                    changes.append({"between": f"{older}->{newer}",
+                                    "kind": "member_removed", "member": member})
+                for sc in ic["signature_changes"]:
+                    if sc["member"] == member:
+                        changes.append({
+                            "between": f"{older}->{newer}",
+                            "kind": "signature_change",
+                            "member": member,
+                            "old_signature": sc["old_signature"],
+                            "new_signature": sc["new_signature"],
+                        })
+                for sc in ic["summary_changes"]:
+                    if sc["member"] == member:
+                        changes.append({
+                            "between": f"{older}->{newer}",
+                            "kind": "summary_change",
+                            "member": member,
+                            "old_summary": sc["old_summary"],
+                            "new_summary": sc["new_summary"],
+                        })
+
+    return {
+        "interface": interface,
+        "member": member,
+        "versions_examined": versions,
+        "per_version": per_version,
+        "changes": changes,
+    }
 
 
 @mcp.tool
@@ -98,12 +245,10 @@ def connect(license_key: str | None = None) -> dict:
 
     Dispatches the EwAPI.EwInteropFactoryX factory and (if a licence key is
     available) immediately fetches an IEwApplicationX. Without a key, the
-    factory is still attached and ``api``/``factory`` roots remain usable;
-    the application root reports a licence error until ``connect`` is called
-    again with a key (or ``$SWELE_LICENCE_KEY`` is set in the env).
+    factory is still attached and ``api``/``factory`` roots remain usable.
     """
     try:
-        factory = com_mod.app().factory()
+        com_mod.app().factory()
     except com_mod.SolidworksElectricalNotInstalledError as e:
         return {"connected": False, "factory": False, "error": str(e)}
     except Exception as e:
@@ -114,6 +259,9 @@ def connect(license_key: str | None = None) -> dict:
         "connected": True,
         "factory": True,
         "progid": com_mod.FACTORY_PROGID,
+        "installed_versions": [f"{y}.{sp}" for y, sp
+                               in com_mod.installed_versions()],
+        "active_catalog": _default_version,
     }
     try:
         com_mod.app().connect_application(license_key)
@@ -137,11 +285,6 @@ def call(path: str, args: list[Any] | None = None,
     * ``"application"`` — IEwApplicationX (default; requires licence key).
     * ``"api"`` — IEwAPIX.
     * ``"factory"`` — IEwInteropFactoryX (no licence required).
-
-    Examples
-    --------
-    ``call("ApplicationSettings.Language")`` reads a property on the app.
-    ``call("getEwAPI", [0], root="factory")`` invokes a factory method.
     """
     try:
         result = com_mod.app().call(path, args, root=root)

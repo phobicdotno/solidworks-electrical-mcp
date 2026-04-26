@@ -1,38 +1,56 @@
 # solidworks-electrical-mcp
 
 MCP server for **SOLIDWORKS Electrical**, mastered against the
-[SOLIDWORKS 2026 Electrical API help](https://help.solidworks.com/2026/english/api/help_list.htm?id=3).
+SOLIDWORKS Electrical API help — **2025** and **2026** ship side-by-side and
+the server picks the right one at runtime.
 
 The server attaches to a local SOLIDWORKS Electrical install via COM
 (`EwAPI.EwInteropFactoryX`, late-bound through `pywin32`) and exposes the
-entire 146-interface API surface to a Claude/MCP client through a small set
-of discovery and execution tools.
+full API surface (141 interfaces in 2025, 146 in 2026) to a Claude/MCP
+client through a small set of discovery, comparison, and execution tools.
 
 ## Status
 
 Alpha. Tested on Windows 11 against SOLIDWORKS Electrical 2025 SP5; the
-catalogue is built from the SOLIDWORKS 2026 docs (the API is stable across
-adjacent releases). Requires SOLIDWORKS Electrical to be installed locally.
+catalogue ships for both 2025 and 2026 and is selected automatically based
+on the installed factory. Requires SOLIDWORKS Electrical to be installed
+locally.
 
 ## How it works
 
 The Doxygen-generated SW Electrical help is the **master** for what is
 callable. A scraper walks `sldworkselecapihelp/annotated.html` and every
-`interface_*.html` page and writes a JSON catalog (146 interfaces, ~2,300
-members at 2026.0.0) into the package. At runtime the MCP server loads that
-catalog and exposes:
+`interface_*.html` page and writes a JSON catalog per major release into
+the package. At runtime the MCP server loads every shipped catalog and
+exposes:
 
 | Tool | Purpose |
 |---|---|
-| `list_interfaces()` | All interface names (e.g. `IEwApplicationX`). |
-| `search_api(query, limit)` | Ranked search across interfaces + members. |
-| `get_api(interface, member?)` | Pull one interface or one member's signature/summary/URL. |
+| `list_versions()` | Shipped catalogs, installed versions, and the active default. |
+| `list_interfaces(version?)` | All interface names in the chosen catalog. |
+| `search_api(query, limit, version?)` | Ranked search across interfaces + members. |
+| `get_api(interface, member?, version?)` | Pull one interface or one member. |
+| `compare_versions(interface, member?)` | Cross-version diff for one interface/member. |
 | `connect(license_key?)` | Dispatch the SW Electrical COM factory and attach an application. |
 | `call(path, args?, root?)` | Late-bound dotted attribute access on `application` / `api` / `factory`. |
 
-The catalog ships in the repo at
-`src/solidworks_electrical_mcp/data/api_catalog.json`. Rebuild it after a SW
-upgrade with `python -m solidworks_electrical_mcp.scrape`.
+Catalogs ship in the repo as
+`src/solidworks_electrical_mcp/data/api_catalog_<version>.json`. Rebuild
+one with `python -m solidworks_electrical_mcp.scrape --version 2026`.
+
+### Version selection
+
+* If a tool gets an explicit `version=`, that wins.
+* Otherwise the server probes `HKLM\SOFTWARE\Classes` for
+  `EwAPI.EwInteropFactoryX.<year>.<sp>` keys and picks the highest installed
+  major that also has a shipped catalog. (Probe runs once at startup, no
+  licence required.)
+* If neither produces a match, the newest shipped catalog is used.
+
+A complete 2025→2026 changelog is in
+[`docs/version-diff-2025-2026.md`](docs/version-diff-2025-2026.md): 5 new
+interfaces, 29 new members, 2 removed members, 2 signature tweaks, plus a
+`setClassID` deprecation note.
 
 ## COM entry point and licence
 
@@ -56,8 +74,9 @@ git clone https://github.com/phobicdotno/solidworks-electrical-mcp.git
 cd solidworks-electrical-mcp
 python -m venv .venv && .venv\Scripts\activate
 pip install -e .
-# Optional: rebuild the catalog from the live SW 2026 docs
-# python -m solidworks_electrical_mcp.scrape
+# Optional: rebuild a catalog from the live SW docs after a yearly release
+# python -m solidworks_electrical_mcp.scrape --version 2026
+# python -m solidworks_electrical_mcp.scrape --version 2027
 ```
 
 ## Wire up to Claude Code

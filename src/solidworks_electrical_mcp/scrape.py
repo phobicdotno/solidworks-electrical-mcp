@@ -34,7 +34,6 @@ from bs4 import BeautifulSoup, Tag
 from . import catalog as catalog_mod
 from .catalog import Catalog, Interface, Member
 
-DEFAULT_BASE = catalog_mod.DOC_BASE
 ANNOTATED = "annotated.html"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,6 +42,13 @@ USER_AGENT = (
 NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', re.S,
 )
+# 2025 Doxygen renders summaries with a trailing " More..." link before the
+# 2026 docs strip it. Normalise so cross-version diffs surface real changes.
+MORE_SUFFIX_RE = re.compile(r"\s*More\.\.\.\s*$")
+
+
+def _clean_summary(s: str) -> str:
+    return MORE_SUFFIX_RE.sub("", s).strip()
 
 
 def _http() -> httpx.Client:
@@ -142,7 +148,9 @@ def _parse_members(page_html: str) -> list[Member]:
             if any(c.startswith("memdesc:") for c in cls):
                 mdoc = sib.find("td", class_="mdescRight")
                 if isinstance(mdoc, Tag):
-                    summary = " ".join(mdoc.get_text(" ", strip=True).split())
+                    summary = _clean_summary(
+                        " ".join(mdoc.get_text(" ", strip=True).split())
+                    )
                 break
             if any(c.startswith("memitem:") for c in cls):
                 break
@@ -159,14 +167,18 @@ def _interface_summary(page_html: str) -> str:
     for blk in soup.find_all("div", class_="textblock"):
         p = blk.find("p")
         if p:
-            text = " ".join(p.get_text(" ", strip=True).split())
+            text = _clean_summary(
+                " ".join(p.get_text(" ", strip=True).split())
+            )
             if text:
                 return text
     return ""
 
 
-def scrape(base: str = DEFAULT_BASE, limit: int | None = None,
+def scrape(version: str = catalog_mod.DEFAULT_VERSION,
+           base: str | None = None, limit: int | None = None,
            sleep: float = 0.1, on_progress=None) -> Catalog:
+    base = base or catalog_mod.doc_base(version)
     with _http() as client:
         annotated = _fetch(client, base, ANNOTATED)
         links = _interface_links(annotated)
@@ -187,13 +199,17 @@ def scrape(base: str = DEFAULT_BASE, limit: int | None = None,
                 on_progress(idx, len(links), name, f"{len(members)} members")
             if sleep:
                 time.sleep(sleep)
-        return Catalog(ifaces)
+        return Catalog(version, ifaces)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="solidworks-electrical-scrape")
-    p.add_argument("--base", default=DEFAULT_BASE)
-    p.add_argument("--out", type=Path, default=None)
+    p.add_argument("--version", default=catalog_mod.DEFAULT_VERSION,
+                   help="SW Electrical major version (e.g. 2025, 2026)")
+    p.add_argument("--base", default=None,
+                   help="Override the doc base URL (otherwise built from --version)")
+    p.add_argument("--out", type=Path, default=None,
+                   help="Override the output JSON path")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--sleep", type=float, default=0.1)
     args = p.parse_args(argv)
@@ -201,11 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     def progress(i: int, n: int, name: str, status: str) -> None:
         print(f"[{i:3d}/{n}] {name:50s} {status}", file=sys.stderr)
 
-    cat = scrape(base=args.base, limit=args.limit, sleep=args.sleep,
-                 on_progress=progress)
+    cat = scrape(version=args.version, base=args.base, limit=args.limit,
+                 sleep=args.sleep, on_progress=progress)
     out = catalog_mod.save(cat, args.out)
     total_members = sum(len(i.members) for i in cat.interfaces)
-    print(f"Wrote {out} ({len(cat.interfaces)} interfaces, {total_members} members)")
+    print(f"Wrote {out} ({len(cat.interfaces)} interfaces, "
+          f"{total_members} members) for version {cat.version}")
     return 0
 
 
