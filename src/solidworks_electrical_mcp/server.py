@@ -180,6 +180,15 @@ def compare_versions(interface: str,
                     "url": hit.url(iface.page, v),
                 }
 
+    iface_seen = any(
+        info.get("present") or info.get("interface_present")
+        for info in per_version.values()
+    )
+    member_seen = (
+        member is None
+        or any(info.get("present") for info in per_version.values())
+    )
+
     changes: list[dict] = []
     for older, newer in zip(versions, versions[1:]):
         d = catalog_mod.diff(_catalogs[older], _catalogs[newer])
@@ -230,13 +239,25 @@ def compare_versions(interface: str,
                             "new_summary": sc["new_summary"],
                         })
 
-    return {
+    out: dict[str, Any] = {
         "interface": interface,
         "member": member,
         "versions_examined": versions,
         "per_version": per_version,
         "changes": changes,
     }
+    if not iface_seen:
+        out["hint"] = (
+            f"Interface {interface!r} is not present in any shipped catalog. "
+            "Try search_api() to find the right name."
+        )
+    elif not member_seen:
+        out["hint"] = (
+            f"Interface {interface!r} exists but member {member!r} is "
+            "not present in any version. Use get_api(interface) to list "
+            "available members."
+        )
+    return out
 
 
 @mcp.tool
@@ -303,7 +324,7 @@ def _coerce(v: Any) -> Any:
 
 
 def main() -> None:
-    mcp.run()
+    mcp.run(show_banner=False)
 
 
 if __name__ == "__main__":
