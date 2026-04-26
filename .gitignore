@@ -25,6 +25,3 @@ Thumbs.db
 # Local cache for the doc scraper
 .cache/
 .cache_*
-
-# Generated catalog (regenerate with `python -m solidworks_electrical_mcp.scrape`)
-data/api_catalog.json

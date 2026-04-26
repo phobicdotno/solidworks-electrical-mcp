@@ -22,6 +22,7 @@ Optional flags:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -39,6 +40,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>', re.S,
+)
 
 
 def _http() -> httpx.Client:
@@ -50,9 +54,31 @@ def _http() -> httpx.Client:
 
 
 def _fetch(client: httpx.Client, base: str, page: str) -> str:
+    """Fetch a help page and return only the inner Doxygen HTML.
+
+    The help site is a Next.js shell; the real Doxygen markup lives in
+    ``__NEXT_DATA__.props.pageProps.helpContentData.helpText``. Pulling that
+    out up-front means the rest of the parser only has to deal with vanilla
+    Doxygen tables.
+    """
     r = client.get(base + page)
     r.raise_for_status()
-    return r.text
+    return _extract_help_text(r.text)
+
+
+def _extract_help_text(html: str) -> str:
+    m = NEXT_DATA_RE.search(html)
+    if not m:
+        return html
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return html
+    text = (data.get("props", {})
+                .get("pageProps", {})
+                .get("helpContentData", {})
+                .get("helpText"))
+    return text if isinstance(text, str) and text else html
 
 
 def _interface_links(annotated_html: str) -> list[tuple[str, str, str]]:
@@ -87,7 +113,7 @@ def _parse_members(page_html: str) -> list[Member]:
     soup = BeautifulSoup(page_html, "lxml")
     members: list[Member] = []
 
-    for tr in soup.select("tr.memitem"):
+    for tr in soup.select("tr[class^='memitem:'], tr[class*=' memitem:']"):
         type_td = tr.find("td", class_="memItemLeft")
         name_td = tr.find("td", class_="memItemRight")
         if not isinstance(name_td, Tag):
@@ -97,46 +123,45 @@ def _parse_members(page_html: str) -> list[Member]:
         if anchor_a and "#" in anchor_a["href"]:
             anchor = anchor_a["href"].split("#", 1)[1]
         sig = " ".join(name_td.get_text(" ", strip=True).split())
-        rtype = " ".join(type_td.get_text(" ", strip=True).split()) if isinstance(type_td, Tag) else ""
+        rtype = ""
+        if isinstance(type_td, Tag):
+            rtype = " ".join(type_td.get_text(" ", strip=True).split())
         full_sig = f"{rtype} {sig}".strip()
         m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", sig)
         name = m.group(1) if m else sig
-        kind = "property" if rtype.lower().startswith("property") or "get_" in name or "set_" in name else "method"
+        is_property = (rtype.lower().startswith("property")
+                       or name.startswith(("get_", "set_", "put_")))
+        is_inherited = "inherit" in (tr.get("class") or [])
+        kind = "property" if is_property else "method"
+        if is_inherited:
+            kind = f"inherited-{kind}"
 
         summary = ""
-        next_tr = tr.find_next_sibling("tr")
-        if next_tr and "memdesc" in (next_tr.get("class") or []):
-            mdoc = next_tr.find("td", class_="mdescRight")
-            if isinstance(mdoc, Tag):
-                summary = " ".join(mdoc.get_text(" ", strip=True).split())
+        for sib in tr.find_next_siblings("tr", limit=2):
+            cls = sib.get("class") or []
+            if any(c.startswith("memdesc:") for c in cls):
+                mdoc = sib.find("td", class_="mdescRight")
+                if isinstance(mdoc, Tag):
+                    summary = " ".join(mdoc.get_text(" ", strip=True).split())
+                break
+            if any(c.startswith("memitem:") for c in cls):
+                break
 
         members.append(Member(
             name=name, kind=kind, signature=full_sig, summary=summary, anchor=anchor,
         ))
-
-    if not members:
-        for h2 in soup.select("h2.memtitle, h2.groupheader"):
-            txt = " ".join(h2.get_text(" ", strip=True).split())
-            m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", txt)
-            if not m:
-                continue
-            name = m.group(1)
-            anchor_a = h2.find("a", attrs={"id": True})
-            anchor = anchor_a["id"] if anchor_a else ""
-            members.append(Member(
-                name=name, kind="method", signature=txt, summary="", anchor=anchor,
-            ))
 
     return members
 
 
 def _interface_summary(page_html: str) -> str:
     soup = BeautifulSoup(page_html, "lxml")
-    brief = soup.find("div", class_="textblock")
-    if brief:
-        first_p = brief.find("p")
-        if first_p:
-            return " ".join(first_p.get_text(" ", strip=True).split())
+    for blk in soup.find_all("div", class_="textblock"):
+        p = blk.find("p")
+        if p:
+            text = " ".join(p.get_text(" ", strip=True).split())
+            if text:
+                return text
     return ""
 
 

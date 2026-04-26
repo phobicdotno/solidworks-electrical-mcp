@@ -1,23 +1,44 @@
 """Thin pywin32/COM wrapper around SOLIDWORKS Electrical.
 
-SOLIDWORKS Electrical exposes its API through a COM server registered as
-``EApp.Application``. We attach via late binding so we do not depend on a
-generated typelib (the user's installed version may differ from 2026).
+The documented entry point on a SOLIDWORKS Electrical install is the COM
+factory ``EwAPI.EwInteropFactoryX`` (interface ``IEwInteropFactoryX``,
+inheriting ``IInteropFactoryX``). The factory hands out two top-level objects:
 
-Methods/properties named on COM interfaces are accessed dynamically — the
-master reference for what is callable is the SOLIDWORKS 2026 API help
-(scraped into the catalog), not a hand-maintained Python wrapper.
+* ``getEwApplication(licenseKey, errorCode)`` → ``IEwApplicationX``
+* ``getEwAPI(errorCode)`` → ``IEwAPIX``
+
+A licence key is required for ``getEwApplication`` — SW Electrical add-ins
+distribute their own keys; for development against an unsigned add-in, set
+``SWELE_LICENCE_KEY`` in the environment or pass ``license_key`` to
+``connect_application``.
+
+Methods/properties are accessed dynamically through pywin32 late binding so
+the wrapper does not need a generated typelib (the user's installed version
+may differ from the 2026 docs the catalogue is built from).
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-PROGID = "EApp.Application"
+# COM ProgID for the SW Electrical factory. The unversioned form picks the
+# latest install; ``EwAPI.EwInteropFactoryX.<year>.<sp>`` pins a specific
+# release (e.g. ``EwAPI.EwInteropFactoryX.2025.5``).
+FACTORY_PROGID = "EwAPI.EwInteropFactoryX"
+
+# Environment variable read by ``connect_application`` if no explicit key is
+# passed. Lets the user wire a licence key in once via Claude Code's MCP env
+# config rather than embedding it in conversation history.
+LICENCE_ENV_VAR = "SWELE_LICENCE_KEY"
 
 
-class CodesysNotInstalledError(RuntimeError):
-    """Raised when SOLIDWORKS Electrical / its COM server is not registered."""
+class SolidworksElectricalNotInstalledError(RuntimeError):
+    """Raised when the SW Electrical COM factory cannot be created."""
+
+
+class SolidworksElectricalLicenceError(RuntimeError):
+    """Raised when no licence key is available for getEwApplication."""
 
 
 def _require_pywin32():
@@ -32,36 +53,88 @@ def _require_pywin32():
 
 
 class ElectricalApp:
-    """Lazy singleton wrapper for the SW Electrical COM application."""
+    """Lazy singleton wrapper for the SW Electrical COM surface."""
 
     def __init__(self) -> None:
+        self._factory: Any | None = None
         self._app: Any | None = None
+        self._api: Any | None = None
 
-    def connect(self) -> Any:
-        if self._app is not None:
-            return self._app
+    def factory(self) -> Any:
+        if self._factory is not None:
+            return self._factory
         client = _require_pywin32()
         try:
-            self._app = client.Dispatch(PROGID)
-        except Exception as e:  # pythoncom raises pywintypes.com_error
-            raise CodesysNotInstalledError(
-                f"Could not create COM dispatch for {PROGID!r}. "
+            self._factory = client.Dispatch(FACTORY_PROGID)
+        except Exception as e:
+            raise SolidworksElectricalNotInstalledError(
+                f"Could not create COM dispatch for {FACTORY_PROGID!r}. "
                 "Is SOLIDWORKS Electrical installed and registered?"
             ) from e
+        return self._factory
+
+    def connect_application(self, license_key: str | None = None) -> Any:
+        if self._app is not None:
+            return self._app
+        key = license_key or os.environ.get(LICENCE_ENV_VAR)
+        if not key:
+            raise SolidworksElectricalLicenceError(
+                "No licence key provided. Pass license_key= or set "
+                f"${LICENCE_ENV_VAR}. SW Electrical add-ins ship their own "
+                "key; use yours."
+            )
+        factory = self.factory()
+        # IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err)
+        # win32com returns out-params as a tuple alongside the return value.
+        result = factory.getEwApplication(key, 0)
+        if isinstance(result, tuple):
+            self._app, _err = result[0], result[-1]
+        else:
+            self._app = result
+        if self._app is None:
+            raise SolidworksElectricalLicenceError(
+                "getEwApplication returned NULL — licence key rejected."
+            )
         return self._app
 
-    def disconnect(self) -> None:
-        self._app = None
+    def get_api(self) -> Any:
+        if self._api is not None:
+            return self._api
+        factory = self.factory()
+        result = factory.getEwAPI(0)
+        if isinstance(result, tuple):
+            self._api = result[0]
+        else:
+            self._api = result
+        return self._api
 
-    def call(self, path: str, args: list[Any] | None = None) -> Any:
-        """Resolve a dotted attribute path on the app and call/read it.
+    def disconnect(self) -> None:
+        self._factory = self._app = self._api = None
+
+    def call(self, path: str, args: list[Any] | None = None,
+             root: str = "application") -> Any:
+        """Resolve a dotted attribute path against one of the COM roots.
+
+        ``root`` selects which top-level object to walk from:
+
+        * ``"application"`` — ``IEwApplicationX`` (default; needs licence key)
+        * ``"api"`` — ``IEwAPIX``
+        * ``"factory"`` — ``IEwInteropFactoryX`` (no licence required)
 
         Examples
         --------
-        ``call("ApplicationSettings.Language")`` → property read
-        ``call("CommandManager.RunCommand", ["NewProject"])`` → method call
+        ``call("ApplicationSettings.Language")`` reads a property on the app.
+        ``call("getEwAPI", [0], root="factory")`` calls a factory method.
         """
-        target = self.connect()
+        if root == "application":
+            target = self.connect_application()
+        elif root == "api":
+            target = self.get_api()
+        elif root == "factory":
+            target = self.factory()
+        else:
+            raise ValueError(f"unknown COM root {root!r}")
+
         parts = path.split(".")
         for p in parts[:-1]:
             target = getattr(target, p)

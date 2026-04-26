@@ -93,29 +93,58 @@ def get_api(interface: str, member: str | None = None) -> dict:
 
 
 @mcp.tool
-def connect() -> dict:
-    """Attach to SOLIDWORKS Electrical via COM (EApp.Application)."""
+def connect(license_key: str | None = None) -> dict:
+    """Attach to SOLIDWORKS Electrical via COM.
+
+    Dispatches the EwAPI.EwInteropFactoryX factory and (if a licence key is
+    available) immediately fetches an IEwApplicationX. Without a key, the
+    factory is still attached and ``api``/``factory`` roots remain usable;
+    the application root reports a licence error until ``connect`` is called
+    again with a key (or ``$SWELE_LICENCE_KEY`` is set in the env).
+    """
     try:
-        com_mod.app().connect()
-    except com_mod.CodesysNotInstalledError as e:
-        return {"connected": False, "error": str(e)}
+        factory = com_mod.app().factory()
+    except com_mod.SolidworksElectricalNotInstalledError as e:
+        return {"connected": False, "factory": False, "error": str(e)}
     except Exception as e:
-        return {"connected": False, "error": f"{type(e).__name__}: {e}"}
-    return {"connected": True, "progid": com_mod.PROGID}
+        return {"connected": False, "factory": False,
+                "error": f"{type(e).__name__}: {e}"}
+
+    out: dict[str, Any] = {
+        "connected": True,
+        "factory": True,
+        "progid": com_mod.FACTORY_PROGID,
+    }
+    try:
+        com_mod.app().connect_application(license_key)
+        out["application"] = True
+    except com_mod.SolidworksElectricalLicenceError as e:
+        out["application"] = False
+        out["licence_error"] = str(e)
+    except Exception as e:
+        out["application"] = False
+        out["licence_error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 @mcp.tool
-def call(path: str, args: list[Any] | None = None) -> dict:
-    """Resolve a dotted attribute path on the app and read or call it.
+def call(path: str, args: list[Any] | None = None,
+         root: str = "application") -> dict:
+    """Resolve a dotted attribute path on a COM root and read or call it.
+
+    The ``root`` argument selects the top-level COM object:
+
+    * ``"application"`` — IEwApplicationX (default; requires licence key).
+    * ``"api"`` — IEwAPIX.
+    * ``"factory"`` — IEwInteropFactoryX (no licence required).
 
     Examples
     --------
-    ``call("ApplicationSettings.Language")`` reads a property.
-    ``call("ProjectManager.Open", ["C:/path/to/project.proj"])`` invokes a
-    method with arguments.
+    ``call("ApplicationSettings.Language")`` reads a property on the app.
+    ``call("getEwAPI", [0], root="factory")`` invokes a factory method.
     """
     try:
-        result = com_mod.app().call(path, args)
+        result = com_mod.app().call(path, args, root=root)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "value": _coerce(result)}
