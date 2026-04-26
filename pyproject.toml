@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solidworks-electrical-mcp"
+version = "0.1.0"
+description = "MCP server for SOLIDWORKS Electrical, master-sourced from the SOLIDWORKS 2026 API help."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Karstein Kvistad" }]
+keywords = ["mcp", "solidworks", "solidworks-electrical", "com", "pywin32"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "fastmcp>=2.0",
+    "pywin32>=306; platform_system=='Windows'",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+solidworks-electrical-mcp = "solidworks_electrical_mcp.server:main"
+solidworks-electrical-scrape = "solidworks_electrical_mcp.scrape:main"
+
+[project.urls]
+Homepage = "https://github.com/phobicdotno/solidworks-electrical-mcp"
+Issues = "https://github.com/phobicdotno/solidworks-electrical-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+solidworks_electrical_mcp = ["data/*.json"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

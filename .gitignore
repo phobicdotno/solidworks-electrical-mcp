@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local cache for the doc scraper
+.cache/
+.cache_*
+
+# Generated catalog (regenerate with `python -m solidworks_electrical_mcp.scrape`)
+data/api_catalog.json
