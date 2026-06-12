@@ -23,7 +23,9 @@ may differ from the 2026 docs the catalogue is built from).
 from __future__ import annotations
 
 import os
+import queue
 import re
+import threading
 from typing import Any
 
 # COM ProgID for the SW Electrical factory. The unversioned form picks the
@@ -84,15 +86,100 @@ def _require_pywin32():
     return win32com.client
 
 
+def coerce_value(v: Any) -> Any:
+    """Convert a COM return value into a JSON-safe Python value.
+
+    MUST run on the COM apartment thread: a live COM object is bound to the
+    apartment that created it, so even ``repr()`` or iteration from another
+    thread raises ``RPC_E_WRONG_THREAD``. Scalars pass through; tuples/lists
+    (pywin32 returns out-params as tuples, SAFEARRAYs as sequences) are
+    coerced elementwise; anything else (a COM sub-object) degrades to a tagged
+    repr so no thread-bound pointer ever escapes the worker.
+    """
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [coerce_value(x) for x in v]
+    try:
+        return [coerce_value(x) for x in list(v)]
+    except Exception:
+        return repr(v)
+
+
+class _ComWorker:
+    """Single dedicated thread that owns every COM call.
+
+    SOLIDWORKS Electrical hands out STA (single-threaded-apartment) objects:
+    each is usable only from the thread that created it. The MCP server runs
+    tool functions on an anyio thread pool, so consecutive calls land on
+    different threads — using a cached COM object from the "wrong" one raises
+    ``RPC_E_WRONG_THREAD``. Funnelling all COM work onto one persistent STA
+    thread keeps every factory/application/api object on its home apartment.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run, name="swele-com", daemon=True)
+        self._start_lock = threading.Lock()
+        self._started = False
+
+    def _ensure_started(self) -> None:
+        with self._start_lock:
+            if not self._started:
+                self._thread.start()
+                self._started = True
+
+    def submit(self, fn):
+        """Run ``fn`` on the COM thread; block for and return its result.
+
+        Exceptions raised by ``fn`` are re-raised on the calling thread with
+        their original type preserved, so callers keep catching
+        ``SolidworksElectricalLicenceError`` etc. as before.
+        """
+        self._ensure_started()
+        box: dict[str, Any] = {}
+        done = threading.Event()
+        self._tasks.put((fn, box, done))
+        done.wait()
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def _run(self) -> None:
+        import pythoncom  # type: ignore
+
+        pythoncom.CoInitialize()  # STA apartment for all SW Electrical objects
+        try:
+            while True:
+                fn, box, done = self._tasks.get()
+                try:
+                    box["value"] = fn()
+                except BaseException as e:  # propagate everything to the caller
+                    box["error"] = e
+                finally:
+                    done.set()
+        finally:  # pragma: no cover - daemon thread runs for process lifetime
+            pythoncom.CoUninitialize()
+
+
 class ElectricalApp:
-    """Lazy singleton wrapper for the SW Electrical COM surface."""
+    """Lazy singleton wrapper for the SW Electrical COM surface.
+
+    Public methods marshal their work onto a single STA thread (`_ComWorker`);
+    the ``*_locked`` helpers hold the actual COM logic and only ever run there,
+    so cached COM objects never cross an apartment boundary.
+    """
 
     def __init__(self) -> None:
         self._factory: Any | None = None
         self._app: Any | None = None
         self._api: Any | None = None
+        self._worker = _ComWorker()
 
-    def factory(self) -> Any:
+    # --- COM logic; these run ONLY on the worker thread -------------------
+
+    def _factory_locked(self) -> Any:
         if self._factory is not None:
             return self._factory
         client = _require_pywin32()
@@ -105,12 +192,12 @@ class ElectricalApp:
             ) from e
         return self._factory
 
-    def connect_application(self, license_key: str | None = None) -> Any:
+    def _connect_application_locked(self, license_key: str | None) -> Any:
         if self._app is not None:
             return self._app
         key = (license_key or os.environ.get(LICENCE_ENV_VAR)
                or DEFAULT_LICENCE_KEY)
-        factory = self.factory()
+        factory = self._factory_locked()
         # IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err).
         # Late-bound, the out-param is omitted by the caller and returned as the
         # second tuple element alongside the IEwApplicationX return value.
@@ -129,23 +216,72 @@ class ElectricalApp:
             )
         return self._app
 
-    def get_api(self) -> Any:
+    def _get_api_locked(self) -> Any:
         if self._api is not None:
             return self._api
-        factory = self.factory()
-        result = factory.getEwAPI(0)
+        factory = self._factory_locked()
+        result = factory.getEwAPI()
         if isinstance(result, tuple):
             self._api = result[0]
         else:
             self._api = result
         return self._api
 
+    def _call_locked(self, path: str, args: list[Any] | None,
+                     root: str) -> Any:
+        if root == "application":
+            target = self._connect_application_locked(None)
+        elif root == "api":
+            target = self._get_api_locked()
+        elif root == "factory":
+            target = self._factory_locked()
+        else:
+            raise ValueError(f"unknown COM root {root!r}")
+
+        parts = path.split(".")
+        for p in parts[:-1]:
+            attr = getattr(target, p)
+            # Navigation getters in this API almost always take only an out
+            # ``errorCode`` (which pywin32 omits), so auto-call a callable
+            # intermediate and unwrap the ``(object, errorCode)`` tuple. A
+            # non-callable intermediate is a property already resolved by the
+            # getattr above. This lets a single path step through objects, e.g.
+            # ``getEwProjectCurrent.getName``.
+            if callable(attr):
+                res = attr()
+                target = res[0] if isinstance(res, tuple) else res
+            else:
+                target = attr
+            if target is None:
+                raise AttributeError(
+                    f"path stopped at {p!r}: it returned NULL (no such object, "
+                    "or nothing is currently active)")
+        leaf = getattr(target, parts[-1])
+        result = leaf if args is None else leaf(*args)
+        # Coerce here, on the apartment thread, so no COM object escapes.
+        return coerce_value(result)
+
+    # --- public API; marshalled onto the worker thread -------------------
+
+    def factory(self) -> Any:
+        return self._worker.submit(self._factory_locked)
+
+    def connect_application(self, license_key: str | None = None) -> Any:
+        return self._worker.submit(
+            lambda: self._connect_application_locked(license_key))
+
+    def get_api(self) -> Any:
+        return self._worker.submit(self._get_api_locked)
+
     def disconnect(self) -> None:
-        self._factory = self._app = self._api = None
+        def _reset() -> None:
+            self._factory = self._app = self._api = None
+        self._worker.submit(_reset)
 
     def call(self, path: str, args: list[Any] | None = None,
              root: str = "application") -> Any:
-        """Resolve a dotted attribute path against one of the COM roots.
+        """Resolve a dotted attribute path against one of the COM roots and
+        return a JSON-safe value.
 
         ``root`` selects which top-level object to walk from:
 
@@ -155,25 +291,10 @@ class ElectricalApp:
 
         Examples
         --------
-        ``call("ApplicationSettings.Language")`` reads a property on the app.
-        ``call("getEwAPI", [0], root="factory")`` calls a factory method.
+        ``call("getApplicationVersion", [])`` reads the app version string.
+        ``call("getEwAPI", [], root="factory")`` calls a factory method.
         """
-        if root == "application":
-            target = self.connect_application()
-        elif root == "api":
-            target = self.get_api()
-        elif root == "factory":
-            target = self.factory()
-        else:
-            raise ValueError(f"unknown COM root {root!r}")
-
-        parts = path.split(".")
-        for p in parts[:-1]:
-            target = getattr(target, p)
-        leaf = getattr(target, parts[-1])
-        if args is None:
-            return leaf
-        return leaf(*args)
+        return self._worker.submit(lambda: self._call_locked(path, args, root))
 
 
 _singleton = ElectricalApp()

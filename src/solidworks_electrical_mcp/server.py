@@ -312,19 +312,12 @@ def call(path: str, args: list[Any] | None = None,
     * ``"factory"`` — IEwInteropFactoryX (no licence required).
     """
     try:
-        result = com_mod.app().call(path, args, root=root)
+        # com.call already coerces the result to a JSON-safe value on the COM
+        # apartment thread, so nothing thread-bound crosses back here.
+        value = com_mod.app().call(path, args, root=root)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return {"ok": True, "value": _coerce(result)}
-
-
-def _coerce(v: Any) -> Any:
-    if v is None or isinstance(v, (str, int, float, bool)):
-        return v
-    try:
-        return list(v)
-    except TypeError:
-        return repr(v)
+    return {"ok": True, "value": value}
 
 
 def _isolate_stdout_from_native_pollution() -> None:
