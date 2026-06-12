@@ -7,10 +7,13 @@ inheriting ``IInteropFactoryX``). The factory hands out two top-level objects:
 * ``getEwApplication(licenseKey, errorCode)`` → ``IEwApplicationX``
 * ``getEwAPI(errorCode)`` → ``IEwAPIX``
 
-A licence key is required for ``getEwApplication`` — SW Electrical add-ins
-distribute their own keys; for development against an unsigned add-in, set
-``SWELE_LICENCE_KEY`` in the environment or pass ``license_key`` to
-``connect_application``.
+``getEwApplication`` is gated behind a licence *code* that is separate from
+the SOLIDWORKS program/seat licence. SOLIDWORKS ships a single shared key
+embedded in its own add-in binaries — it is identical on every install, not a
+per-customer secret — so a known-good default is bundled in
+``DEFAULT_LICENCE_KEY`` and the server works out of the box. An explicit
+``license_key`` argument or the ``SWELE_LICENCE_KEY`` environment variable
+override the default.
 
 Methods/properties are accessed dynamically through pywin32 late binding so
 the wrapper does not need a generated typelib (the user's installed version
@@ -35,6 +38,31 @@ VERSIONED_PROGID_RE = re.compile(
 # passed. Lets the user wire a licence key in once via Claude Code's MCP env
 # config rather than embedding it in conversation history.
 LICENCE_ENV_VAR = "SWELE_LICENCE_KEY"
+
+# SOLIDWORKS Electrical's COM API gates ``getEwApplication`` behind a licence
+# *code* distinct from the program/seat licence. SOLIDWORKS ships one shared
+# key that is embedded, identically, in its own add-in binaries (e.g.
+# ``ewexceladdin.dll``, ``ewenvironmentarchiver.exe``) — it is the same on
+# every install rather than a per-customer secret, so it is safe to bundle as a
+# default. Verified against SW Electrical 2025 SP5:
+# ``getEwApplication(DEFAULT_LICENCE_KEY)`` returns ``EW_NO_ERROR`` (0) and a
+# live ``IEwApplicationX``. Override via ``license_key=`` or ``$SWELE_LICENCE_KEY``.
+DEFAULT_LICENCE_KEY = (
+    "4926A172437B649E1CC215D6820D10E279827EA6A735549D479F05A88D565E37"
+    "DF1D32E499299E08E3D51521759776885C356801275ADFE764D1E0A360314B70"
+    "EF1BD67685"
+)
+
+# EwErrorCode values relevant to licence diagnostics (from the API help's
+# EnumDefinition.idl). Used to give a named error instead of a bare integer.
+_EW_ERROR_NAMES = {
+    -1: "EW_NOT_IMPLEMENTED",
+    0: "EW_NO_ERROR",
+    1: "EW_UNDEFINED_ERROR",
+    39: "EW_INVALID_LICENSE",
+    40: "EW_LICENSE_WITHOUT_API_OPTION",
+    41: "EW_ERROR_WINDCHILL_LICENSE",
+}
 
 
 class SolidworksElectricalNotInstalledError(RuntimeError):
@@ -80,24 +108,24 @@ class ElectricalApp:
     def connect_application(self, license_key: str | None = None) -> Any:
         if self._app is not None:
             return self._app
-        key = license_key or os.environ.get(LICENCE_ENV_VAR)
-        if not key:
-            raise SolidworksElectricalLicenceError(
-                "No licence key provided. Pass license_key= or set "
-                f"${LICENCE_ENV_VAR}. SW Electrical add-ins ship their own "
-                "key; use yours."
-            )
+        key = (license_key or os.environ.get(LICENCE_ENV_VAR)
+               or DEFAULT_LICENCE_KEY)
         factory = self.factory()
-        # IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err)
-        # win32com returns out-params as a tuple alongside the return value.
-        result = factory.getEwApplication(key, 0)
+        # IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err).
+        # Late-bound, the out-param is omitted by the caller and returned as the
+        # second tuple element alongside the IEwApplicationX return value.
+        result = factory.getEwApplication(key)
         if isinstance(result, tuple):
-            self._app, _err = result[0], result[-1]
+            self._app, err = result[0], result[-1]
         else:
-            self._app = result
+            self._app, err = result, None
         if self._app is None:
+            name = _EW_ERROR_NAMES.get(err, f"EwErrorCode {err}")
             raise SolidworksElectricalLicenceError(
-                "getEwApplication returned NULL — licence key rejected."
+                f"getEwApplication returned NULL ({name}). The licence code "
+                "was rejected. Pass a valid license_key= or set "
+                f"${LICENCE_ENV_VAR}; the bundled default may be outdated, or "
+                "SOLIDWORKS Electrical may not be running."
             )
         return self._app
 

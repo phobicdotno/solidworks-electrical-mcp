@@ -57,15 +57,21 @@ interfaces, 29 new members, 2 removed members, 2 signature tweaks, plus a
 The Win32 COM ProgID is **`EwAPI.EwInteropFactoryX`** (interface
 `IEwInteropFactoryX`). The factory hands out:
 
-* `getEwApplication(licenseKey, errorCode)` → `IEwApplicationX` — needs a
-  licence key. SW Electrical add-ins ship their own keys; for development
-  set `SWELE_LICENCE_KEY` in the env (read by `connect`) or pass
-  `license_key=` directly to the `connect` tool.
+* `getEwApplication(licenseKey, errorCode)` → `IEwApplicationX` — gated behind
+  a licence *code* that is separate from the SOLIDWORKS program/seat licence.
+  SOLIDWORKS ships a single shared key embedded identically in its own add-in
+  binaries (e.g. `ewexceladdin.dll`, `ewenvironmentarchiver.exe`) — it is the
+  same on every install, not a per-customer secret — so a known-good default
+  is **bundled** (`DEFAULT_LICENCE_KEY` in `com.py`) and the application root
+  works out of the box. Override with `SWELE_LICENCE_KEY` in the env (read by
+  `connect`) or `license_key=` on the `connect` tool if a future release
+  rotates the key.
 * `getEwAPI(errorCode)` → `IEwAPIX` — no licence required, gives access to
   application-discovery and version helpers.
 
-Both roots are reachable from the `call` tool via `root="api"` /
-`root="factory"`; the default `root="application"` requires the licence key.
+All three roots are reachable from the `call` tool via `root="application"`
+(default) / `root="api"` / `root="factory"`. The application root additionally
+needs SOLIDWORKS Electrical to be **running**.
 
 ## Install
 
@@ -89,18 +95,16 @@ Add to `~/.claude/settings.json` under `mcpServers`:
     "solidworks-electrical": {
       "type": "stdio",
       "command": "C:\\path\\to\\repo\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "solidworks_electrical_mcp"],
-      "env": {
-        "SWELE_LICENCE_KEY": "<your SW Electrical add-in licence key>"
-      }
+      "args": ["-m", "solidworks_electrical_mcp"]
     }
   }
 }
 ```
 
-The `env` block is optional — without a key, `connect`, `search_api`,
-`get_api`, `list_interfaces`, and `call(..., root="api"|"factory")` all
-work; only `call(..., root="application")` requires the licence.
+No `env` block is needed — the shared licence code is bundled, so
+`call(..., root="application")` works once SOLIDWORKS Electrical is running.
+Set `SWELE_LICENCE_KEY` only to override the bundled key (e.g. if a future
+release rotates it).
 
 ## Why local stdio (not remote HTTP)
 

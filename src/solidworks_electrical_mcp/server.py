@@ -264,9 +264,11 @@ def compare_versions(interface: str,
 def connect(license_key: str | None = None) -> dict:
     """Attach to SOLIDWORKS Electrical via COM.
 
-    Dispatches the EwAPI.EwInteropFactoryX factory and (if a licence key is
-    available) immediately fetches an IEwApplicationX. Without a key, the
-    factory is still attached and ``api``/``factory`` roots remain usable.
+    Dispatches the EwAPI.EwInteropFactoryX factory and fetches an
+    IEwApplicationX. A shared licence code is bundled by default, so the
+    application root works out of the box; pass ``license_key`` (or set
+    ``SWELE_LICENCE_KEY``) to override it. SOLIDWORKS Electrical must be
+    running for the application attach to succeed.
     """
     try:
         com_mod.app().factory()
@@ -303,7 +305,8 @@ def call(path: str, args: list[Any] | None = None,
 
     The ``root`` argument selects the top-level COM object:
 
-    * ``"application"`` — IEwApplicationX (default; requires licence key).
+    * ``"application"`` — IEwApplicationX (default; uses the bundled licence
+      code unless overridden, and needs SW Electrical running).
     * ``"api"`` — IEwAPIX.
     * ``"factory"`` — IEwInteropFactoryX (no licence required).
     """
