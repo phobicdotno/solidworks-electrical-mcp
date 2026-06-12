@@ -227,26 +227,20 @@ class ElectricalApp:
             self._api = result
         return self._api
 
-    def _call_locked(self, path: str, args: list[Any] | None,
-                     root: str) -> Any:
+    def _root_target(self, root: str) -> Any:
         if root == "application":
-            target = self._connect_application_locked(None)
-        elif root == "api":
-            target = self._get_api_locked()
-        elif root == "factory":
-            target = self._factory_locked()
-        else:
-            raise ValueError(f"unknown COM root {root!r}")
+            return self._connect_application_locked(None)
+        if root == "api":
+            return self._get_api_locked()
+        if root == "factory":
+            return self._factory_locked()
+        raise ValueError(f"unknown COM root {root!r}")
 
-        parts = path.split(".")
-        for p in parts[:-1]:
+    def _navigate(self, target: Any, parts: list[str]) -> Any:
+        """Walk dotted path segments, auto-calling callable getters and
+        unwrapping ``(object, errorCode)`` tuples (see ``_call_locked``)."""
+        for p in parts:
             attr = getattr(target, p)
-            # Navigation getters in this API almost always take only an out
-            # ``errorCode`` (which pywin32 omits), so auto-call a callable
-            # intermediate and unwrap the ``(object, errorCode)`` tuple. A
-            # non-callable intermediate is a property already resolved by the
-            # getattr above. This lets a single path step through objects, e.g.
-            # ``getEwProjectCurrent.getName``.
             if callable(attr):
                 res = attr()
                 target = res[0] if isinstance(res, tuple) else res
@@ -256,6 +250,29 @@ class ElectricalApp:
                 raise AttributeError(
                     f"path stopped at {p!r}: it returned NULL (no such object, "
                     "or nothing is currently active)")
+        return target
+
+    def _call_ops_locked(self, target_path: str | None,
+                         ops: list[dict], root: str) -> list[Any]:
+        target = self._root_target(root)
+        if target_path:
+            target = self._navigate(target, target_path.split("."))
+        results: list[Any] = []
+        for op in ops:
+            member = getattr(target, op["member"])
+            a = op.get("args")
+            result = member if a is None else member(*a)
+            results.append(coerce_value(result))
+        return results
+
+    def _call_locked(self, path: str, args: list[Any] | None,
+                     root: str) -> Any:
+        target = self._root_target(root)
+        # Navigate intermediate path segments (auto-calling getters, unwrapping
+        # tuples) so a single path can step through objects, e.g.
+        # ``getEwProjectCurrent.getName``; the last segment is the leaf to call.
+        parts = path.split(".")
+        target = self._navigate(target, parts[:-1])
         leaf = getattr(target, parts[-1])
         result = leaf if args is None else leaf(*args)
         # Coerce here, on the apartment thread, so no COM object escapes.
@@ -295,6 +312,23 @@ class ElectricalApp:
         ``call("getEwAPI", [], root="factory")`` calls a factory method.
         """
         return self._worker.submit(lambda: self._call_locked(path, args, root))
+
+    def call_ops(self, target_path: str | None, ops: list[dict],
+                 root: str = "application") -> list[Any]:
+        """Navigate to one COM object and run several members on that SAME
+        retained object, in order, returning a JSON-safe result per op.
+
+        Required for stateful sequences where the object must persist across
+        calls — e.g. ``getEwProjectCurrent`` then ``setName`` + ``update`` +
+        ``getName``. Doing those as separate ``call`` invocations fails because
+        each re-navigates and releases a fresh wrapper, discarding the edit.
+
+        ``target_path`` is a dotted path to the object (every segment is
+        auto-called/unwrapped); pass ``None``/empty to operate on the root.
+        ``ops`` is a list of ``{"member": str, "args": list | None}``.
+        """
+        return self._worker.submit(
+            lambda: self._call_ops_locked(target_path, ops, root))
 
 
 _singleton = ElectricalApp()

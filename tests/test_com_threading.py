@@ -80,11 +80,24 @@ def main() -> int:
                 ok = False
                 if "error" in r and "thread" in str(r["error"]).lower():
                     print("  >>> WRONG-THREAD REGRESSION")
+        # call_ops on one retained object (read-only: two members on the app
+        # root). Exercises the single-object op-sequence path without mutating.
+        ops = tool("call_ops", {"target": None, "ops": [
+            {"member": "getApplicationVersion", "args": []},
+            {"member": "getName", "args": []},
+        ], "root": "application"})
+        vals = ops.get("values")
+        ops_ok = (ops.get("ok") and isinstance(vals, list) and len(vals) == 2
+                  and all(isinstance(v, str) and v for v in vals))
+        print(f"call_ops: ok={ops.get('ok')} values={vals}")
+        if not ops_ok:
+            ok = False
+
         if ok:
-            print("PASS: application-root calls returned real values across the "
-                  "threadpool (no wrong-thread errors).")
+            print("PASS: application-root calls and call_ops returned real "
+                  "values across the threadpool (no wrong-thread errors).")
             return 0
-        print("FAIL: an application-root call did not return a scalar value.")
+        print("FAIL: an application-root call did not return the expected value.")
         return 1
     finally:
         if proc.poll() is None:

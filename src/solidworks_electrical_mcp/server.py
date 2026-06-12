@@ -320,6 +320,41 @@ def call(path: str, args: list[Any] | None = None,
     return {"ok": True, "value": value}
 
 
+@mcp.tool
+def call_ops(target: str | None, ops: list[dict],
+             root: str = "application") -> dict:
+    """Run several members on ONE retained COM object, in order.
+
+    Use this for stateful sequences where the object must survive across
+    operations — e.g. fetch the current project, then ``setName`` + ``update``
+    + ``getName`` on that same project. Doing those as separate ``call``
+    invocations fails: each re-navigates and releases a fresh wrapper, so the
+    edit is discarded before it is committed.
+
+    Parameters
+    ----------
+    target : dotted path to the object (every segment is auto-called and
+        ``(object, errorCode)`` tuples unwrapped). Pass ``null``/empty to
+        operate directly on the ``root`` object.
+    ops : list of ``{"member": str, "args": [...] | null}`` applied in order.
+    root : ``"application"`` (default) / ``"api"`` / ``"factory"``.
+
+    Example
+    -------
+    Rename the current project and read it back in one call::
+
+        call_ops("getEwProjectCurrent",
+                 [{"member": "setName", "args": ["New Title"]},
+                  {"member": "update", "args": []},
+                  {"member": "getName", "args": []}])
+    """
+    try:
+        values = com_mod.app().call_ops(target, ops, root=root)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "values": values}
+
+
 def _isolate_stdout_from_native_pollution() -> None:
     """Stop native libraries from corrupting the JSON-RPC stream.
 
