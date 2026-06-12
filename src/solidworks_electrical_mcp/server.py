@@ -30,6 +30,7 @@ call(path, args=None, root='application')
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from fastmcp import FastMCP
@@ -326,7 +327,50 @@ def _coerce(v: Any) -> Any:
         return repr(v)
 
 
+def _isolate_stdout_from_native_pollution() -> None:
+    """Stop native libraries from corrupting the JSON-RPC stream.
+
+    SOLIDWORKS Electrical's COM DLLs write diagnostic lines straight to OS
+    file descriptor 1 (e.g. ``...isSOLIDWORKSApplication ... Services are not
+    initialized``) whenever the application isn't fully started. The MCP stdio
+    transport multiplexes JSON-RPC over that same fd, so the raw text breaks
+    message framing and the client drops the connection ("Connection closed").
+    The write happens inside native code, below Python, so a ``try/except``
+    around the COM call cannot intercept it.
+
+    Preserve the real client-facing stdout on a private fd that the transport
+    writes JSON-RPC to, and point fd 1 at stderr so any native chatter lands in
+    the server log instead of the protocol stream.
+    """
+    import io
+    import os
+
+    try:
+        # 1. Take a private copy of the client-facing stdout pipe and route the
+        #    transport's JSON-RPC writes there first, so a working client
+        #    channel exists before fd 1 is touched.
+        saved_fd = os.dup(1)
+        sys.stdout = io.TextIOWrapper(
+            io.BufferedWriter(io.FileIO(saved_fd, mode="w")),
+            encoding="utf-8", newline="\n", line_buffering=True,
+        )
+        # 2. Point fd 1 at stderr so native chatter shows up in the server log;
+        #    if stderr is unavailable, fall back to the null device.
+        try:
+            os.dup2(2, 1)
+        except OSError:
+            null_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null_fd, 1)
+            os.close(null_fd)
+    except OSError:
+        # Best effort: if isolation can't be set up, leave stdout as-is rather
+        # than taking the server down. The pollution risk returns, but the
+        # transport still functions.
+        pass
+
+
 def main() -> None:
+    _isolate_stdout_from_native_pollution()
     mcp.run(show_banner=False)
 
 
