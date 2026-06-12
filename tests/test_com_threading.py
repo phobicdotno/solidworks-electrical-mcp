@@ -93,9 +93,17 @@ def main() -> int:
         if not ops_ok:
             ok = False
 
+        # get_enum reads enum members from the live typelib (not the catalog).
+        en = tool("get_enum", {"name": "EwErrorCode"})
+        members = en.get("members", {}) if isinstance(en, dict) else {}
+        enum_ok = en.get("ok") and members.get("EW_NO_ERROR") == 0
+        print(f"get_enum: ok={en.get('ok')} EW_NO_ERROR={members.get('EW_NO_ERROR')}")
+        if not enum_ok:
+            ok = False
+
         if ok:
-            print("PASS: application-root calls and call_ops returned real "
-                  "values across the threadpool (no wrong-thread errors).")
+            print("PASS: application-root calls, call_ops and get_enum returned "
+                  "real values across the threadpool (no wrong-thread errors).")
             return 0
         print("FAIL: an application-root call did not return the expected value.")
         return 1

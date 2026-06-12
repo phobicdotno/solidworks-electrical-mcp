@@ -45,7 +45,31 @@ mcp = FastMCP(
         "via doc catalogues sourced from help.solidworks.com. Multiple major "
         "releases are supported simultaneously — list_versions() reports "
         "what is shipped and what is installed; every other tool that needs "
-        "a catalog accepts an optional version= parameter."
+        "a catalog accepts an optional version= parameter.\n\n"
+        "Tools: search_api/get_api/compare_versions (discover the API surface) "
+        "· get_enum (enum integer values — NOT in the catalog, read from the "
+        "live typelib; needed because call/call_ops take plain ints for enum "
+        "args) · connect · call (one member on a navigated path) · call_ops "
+        "(several members on ONE retained object — required for stateful "
+        "get→set→update→read) · array_ops (reach into VARIANT collections).\n\n"
+        "Validated recipes (project must be open):\n"
+        "• Read the current project name: call('getEwProjectCurrent.getName').\n"
+        "• Rename the project (drives the cover-sheet title): call_ops("
+        "'getEwProjectCurrent', [{'member':'setName','args':[NEW]},"
+        "{'member':'update','args':[]}]).\n"
+        "• List project files (cover page is EwFileType kFileCoverPage=5, "
+        "tag '01'): array_ops('getEwProjectCurrent.getEwProjectFileManager."
+        "getEwProjectFileArray', [{'member':'getTag','args':[]},"
+        "{'member':'getDescription','args':['en']},"
+        "{'member':'getFileType','args':[]}]).\n"
+        "• Regenerate/refresh title-block data project-wide: call_ops("
+        "'getEwProjectCurrent.getEwProjectUpdateData', "
+        "[{'member':'resetProjectDataObjectType','args':[]},"
+        "{'member':'addProjectDataObjectType','args':[3]},"  # kProjectDataTitleBlock
+        "{'member':'process','args':[0]}]).  3=kProjectDataTitleBlock, "
+        "0=kProjectDataUpdate. NOTE: process returns 45 (EW_PROJECT_OPENED) if "
+        "drawings are open — close open documents first, or just close+reopen a "
+        "single folio to re-render its title block."
     ),
 )
 
@@ -353,6 +377,60 @@ def call_ops(target: str | None, ops: list[dict],
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "values": values}
+
+
+@mcp.tool
+def array_ops(array: str, ops: list[dict], select: dict | None = None,
+              root: str = "application", limit: int | None = None) -> dict:
+    """Enumerate a COM array and run members on each (optionally filtered) item.
+
+    A plain ``call`` that returns a collection (``VARIANT`` of ``IDispatch``)
+    yields opaque handles you can't index or invoke. This reaches into the
+    array and operates on its elements.
+
+    Parameters
+    ----------
+    array : dotted path that resolves to the array, e.g.
+        ``"getEwProjectCurrent.getEwProjectFileManager.getEwProjectFileArray"``.
+    ops : ``[{"member": str, "args": [...] | null}, ...]`` run on each element.
+    select : optional ``{"member": str, "args": [...], "equals": value}`` —
+        keep only elements whose ``member(*args)`` equals ``value``.
+    limit : optional cap on number of returned elements.
+
+    Returns ``{"ok", "rows": [{"index", "results": [...]}, ...]}``.
+
+    Example — read tag + description of every project file::
+
+        array_ops("getEwProjectCurrent.getEwProjectFileManager.getEwProjectFileArray",
+                  [{"member": "getTag", "args": []},
+                   {"member": "getDescription", "args": ["en"]}])
+    """
+    try:
+        rows = com_mod.app().array_ops(array, ops, select=select, root=root,
+                                       limit=limit)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "rows": rows}
+
+
+@mcp.tool
+def get_enum(name: str | None = None) -> dict:
+    """Resolve COM enum members from the installed SW Electrical type library.
+
+    Enum values are NOT in the scraped doc catalog, so this reads them from the
+    live typelib — letting you supply correct integer arguments to ``call`` /
+    ``call_ops`` (which take plain ints for enum parameters).
+
+    Pass a name (e.g. ``"EwProjectDataObjectType"``, ``"EwErrorCode"``,
+    ``"EwFileType"``) to get its members; pass nothing to list all enum names.
+    """
+    try:
+        enums = com_mod.app().list_enums(name)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if name is None:
+        return {"ok": True, "enums": sorted(enums)}
+    return {"ok": True, "name": name, "members": enums.get(name, {})}
 
 
 def _isolate_stdout_from_native_pollution() -> None:

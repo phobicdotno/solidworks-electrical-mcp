@@ -175,6 +175,7 @@ class ElectricalApp:
         self._factory: Any | None = None
         self._app: Any | None = None
         self._api: Any | None = None
+        self._enums: dict[str, dict[str, int]] | None = None
         self._worker = _ComWorker()
 
     # --- COM logic; these run ONLY on the worker thread -------------------
@@ -265,6 +266,59 @@ class ElectricalApp:
             results.append(coerce_value(result))
         return results
 
+    def _array_ops_locked(self, array_path: str | None, select: dict | None,
+                          ops: list[dict], root: str,
+                          limit: int | None) -> list[dict]:
+        client = _require_pywin32()
+        target = self._root_target(root)
+        arr = (self._navigate(target, array_path.split("."))
+               if array_path else target)
+        rows: list[dict] = []
+        for idx, raw in enumerate(arr):
+            # VARIANT arrays come back as raw PyIDispatch; wrap each so late
+            # binding (getattr/method calls) works.
+            try:
+                el = client.Dispatch(raw)
+            except Exception:
+                el = raw
+            if select is not None:
+                sv = getattr(el, select["member"])(*(select.get("args") or []))
+                sv = sv[0] if isinstance(sv, tuple) else sv
+                if sv != select.get("equals"):
+                    continue
+            results = []
+            for op in (ops or []):
+                member = getattr(el, op["member"])
+                a = op.get("args")
+                r = member if a is None else member(*a)
+                results.append(coerce_value(r))
+            rows.append({"index": idx, "results": results})
+            if limit and len(rows) >= limit:
+                break
+        return rows
+
+    def _list_enums_locked(self, name: str | None) -> dict[str, dict[str, int]]:
+        if self._enums is None:
+            import pythoncom  # type: ignore
+            factory = self._factory_locked()
+            tlib, _idx = factory._oleobj_.GetTypeInfo().GetContainingTypeLib()
+            enums: dict[str, dict[str, int]] = {}
+            for i in range(tlib.GetTypeInfoCount()):
+                nm = tlib.GetDocumentation(i)[0]
+                info = tlib.GetTypeInfo(i)
+                if info.GetTypeAttr().typekind != pythoncom.TKIND_ENUM:
+                    continue
+                members: dict[str, int] = {}
+                ta = info.GetTypeAttr()
+                for v in range(ta.cVars):
+                    vd = info.GetVarDesc(v)
+                    members[info.GetNames(vd.memid)[0]] = vd.value
+                enums[nm] = members
+            self._enums = enums
+        if name is None:
+            return self._enums
+        return {name: self._enums.get(name, {})}
+
     def _call_locked(self, path: str, args: list[Any] | None,
                      root: str) -> Any:
         target = self._root_target(root)
@@ -329,6 +383,29 @@ class ElectricalApp:
         """
         return self._worker.submit(
             lambda: self._call_ops_locked(target_path, ops, root))
+
+    def array_ops(self, array_path: str | None, ops: list[dict],
+                  select: dict | None = None, root: str = "application",
+                  limit: int | None = None) -> list[dict]:
+        """Enumerate a COM array and run members on each element.
+
+        COM arrays (``VARIANT`` of ``IDispatch``) come back from a plain
+        ``call`` as opaque handles that can't be indexed or invoked. This
+        navigates to such an array, wraps each element, optionally filters by
+        ``select`` (``{"member","args","equals"}``), and runs ``ops`` on each
+        matching element — returning ``{"index", "results"}`` per element.
+        """
+        return self._worker.submit(
+            lambda: self._array_ops_locked(array_path, select, ops, root, limit))
+
+    def list_enums(self, name: str | None = None) -> dict[str, dict[str, int]]:
+        """Read COM enum members from the installed type library.
+
+        Enum values (e.g. ``EwProjectDataObjectType.kProjectDataTitleBlock``)
+        are not in the scraped doc catalog; this reads them from the live
+        typelib so ``call``/``call_ops`` integer arguments are knowable.
+        """
+        return self._worker.submit(lambda: self._list_enums_locked(name))
 
 
 _singleton = ElectricalApp()
