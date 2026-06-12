@@ -9,10 +9,10 @@ workflow is up and the friction shows up in actual conversations.
 ### (b) Manufacturer-part picker widget
 
 **Why it would help:** SW Electrical projects pull from large catalogs
-(manufacturer parts, cables, terminals, symbols) that Claude cannot
-realistically rank from a text dump. A searchable picker widget renders the
-filtered list inline in chat; the user clicks one row; the chosen part ID is
-sent back into the conversation as a user message.
+(manufacturer parts, cables, terminals, symbols) that cannot be
+realistically ranked from a plain text dump. A searchable picker widget
+renders the filtered list inline; the user clicks one row; the chosen part ID
+is sent back into the conversation as a user message.
 
 **Shape:**
 

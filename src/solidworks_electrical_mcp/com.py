@@ -35,8 +35,8 @@ VERSIONED_PROGID_RE = re.compile(
 )
 
 # Environment variable read by ``connect_application`` if no explicit key is
-# passed. Lets the user wire a licence key in once via Claude Code's MCP env
-# config rather than embedding it in conversation history.
+# passed. Lets the user wire a licence key in once via the MCP client's env
+# config rather than passing it on every call.
 LICENCE_ENV_VAR = "SWELE_LICENCE_KEY"
 
 # SOLIDWORKS Electrical's COM API gates ``getEwApplication`` behind a licence

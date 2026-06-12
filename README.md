@@ -6,7 +6,7 @@ the server picks the right one at runtime.
 
 The server attaches to a local SOLIDWORKS Electrical install via COM
 (`EwAPI.EwInteropFactoryX`, late-bound through `pywin32`) and exposes the
-full API surface (141 interfaces in 2025, 146 in 2026) to a Claude/MCP
+full API surface (141 interfaces in 2025, 146 in 2026) to an MCP
 client through a small set of discovery, comparison, and execution tools.
 
 ## Status
@@ -85,9 +85,10 @@ pip install -e .
 # python -m solidworks_electrical_mcp.scrape --version 2027
 ```
 
-## Wire up to Claude Code
+## Wire up to an MCP client
 
-Add to `~/.claude/settings.json` under `mcpServers`:
+Add the server to your MCP client's configuration (the `mcpServers` block in
+its settings):
 
 ```jsonc
 {
