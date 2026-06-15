@@ -69,7 +69,15 @@ mcp = FastMCP(
         "{'member':'process','args':[0]}]).  3=kProjectDataTitleBlock, "
         "0=kProjectDataUpdate. NOTE: process returns 45 (EW_PROJECT_OPENED) if "
         "drawings are open — close open documents first, or just close+reopen a "
-        "single folio to re-render its title block."
+        "single folio to re-render its title block.\n\n"
+        "Known limits: the doc catalog is INCOMPLETE — use typelib_members(iface) "
+        "for ground truth (e.g. IEwProjectFileX.setRevisionTranslatableTextAt is "
+        "real but absent from get_api). REVISIONS: the only revision member in "
+        "the typelib is IEwProjectFileX.setRevisionTranslatableTextAt(revNo, "
+        "fieldIndex, lang, text); it EDITS an existing revision (returns 8 = "
+        "EW_DOES_NOT_EXIST for a missing revNo) — there is NO API to create a "
+        "revision, set its date, or set its index, so new revision rows must be "
+        "added in the GUI."
     ),
 )
 
@@ -431,6 +439,23 @@ def get_enum(name: str | None = None) -> dict:
     if name is None:
         return {"ok": True, "enums": sorted(enums)}
     return {"ok": True, "name": name, "members": enums.get(name, {})}
+
+
+@mcp.tool
+def typelib_members(interface: str) -> dict:
+    """List an interface's members from the live COM type library.
+
+    The scraped doc catalog (search_api/get_api) can be INCOMPLETE — it omits
+    some real, callable methods. This reads the interface straight from the
+    installed type library (ground truth), surfacing undocumented members with
+    parameter names/types. Use it when get_api seems to be missing a method you
+    expect, or to confirm whether a capability exists at all.
+    """
+    try:
+        result = com_mod.app().typelib_members(interface)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, **result}
 
 
 def _isolate_stdout_from_native_pollution() -> None:

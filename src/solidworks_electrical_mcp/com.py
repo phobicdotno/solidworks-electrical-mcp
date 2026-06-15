@@ -319,6 +319,46 @@ class ElectricalApp:
             return self._enums
         return {name: self._enums.get(name, {})}
 
+    # COM VARTYPE -> short readable name, for typelib member signatures.
+    _VT = {2: "i2", 3: "i4", 4: "r4", 5: "r8", 7: "DATE", 8: "BSTR",
+           9: "IDispatch", 11: "BOOL", 12: "VARIANT", 13: "IUnknown",
+           16: "i1", 17: "ui1", 18: "ui2", 19: "ui4", 20: "i8", 21: "ui8",
+           22: "INT_PTR", 23: "UINT_PTR", 24: "void", 26: "UINT_PTR",
+           27: "INT_PTR"}
+
+    def _typelib_members_locked(self, interface: str) -> dict:
+        import pythoncom  # type: ignore
+        factory = self._factory_locked()
+        tlib, _idx = factory._oleobj_.GetTypeInfo().GetContainingTypeLib()
+        for i in range(tlib.GetTypeInfoCount()):
+            if tlib.GetDocumentation(i)[0] != interface:
+                continue
+            info = tlib.GetTypeInfo(i)
+            ta = info.GetTypeAttr()
+            skip = {"QueryInterface", "AddRef", "Release", "GetTypeInfoCount",
+                    "GetTypeInfo", "GetIDsOfNames", "Invoke"}
+            members = []
+            for fnum in range(ta.cFuncs):
+                fd = info.GetFuncDesc(fnum)
+                names = info.GetNames(fd.memid)
+                fname = names[0]
+                if fname in skip:
+                    continue
+                pnames = names[1:]
+                params = []
+                try:
+                    for ai, elem in enumerate(fd.args):
+                        td = elem[0]
+                        vt = td[0] if isinstance(td, tuple) else td
+                        pn = pnames[ai] if ai < len(pnames) else f"p{ai}"
+                        params.append(f"{self._VT.get(vt, f'vt{vt}')} {pn}")
+                except Exception:
+                    pass
+                members.append({"name": fname,
+                                "signature": f"{fname}({', '.join(params)})"})
+            return {"interface": interface, "members": members}
+        return {"interface": interface, "error": "not found in type library"}
+
     def _call_locked(self, path: str, args: list[Any] | None,
                      root: str) -> Any:
         target = self._root_target(root)
@@ -406,6 +446,17 @@ class ElectricalApp:
         typelib so ``call``/``call_ops`` integer arguments are knowable.
         """
         return self._worker.submit(lambda: self._list_enums_locked(name))
+
+    def typelib_members(self, interface: str) -> dict:
+        """List every member of an interface from the live type library.
+
+        The scraped doc catalog can be incomplete (e.g. it omits
+        ``IEwProjectFileX.setRevisionTranslatableTextAt``). The typelib is
+        ground truth for what is actually callable, so this surfaces
+        undocumented members with their parameter names/types.
+        """
+        return self._worker.submit(
+            lambda: self._typelib_members_locked(interface))
 
 
 _singleton = ElectricalApp()
