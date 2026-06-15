@@ -267,12 +267,22 @@ class ElectricalApp:
         return results
 
     def _array_ops_locked(self, array_path: str | None, select: dict | None,
-                          ops: list[dict], root: str,
-                          limit: int | None) -> list[dict]:
+                          ops: list[dict], root: str, limit: int | None,
+                          array_args: list | None) -> list[dict]:
         client = _require_pywin32()
         target = self._root_target(root)
-        arr = (self._navigate(target, array_path.split("."))
-               if array_path else target)
+        if not array_path:
+            arr = target
+        elif array_args:
+            # The array comes from a method that takes arguments (e.g.
+            # getProjectSymbolsFromFileID(fileID)) — navigate to its owner,
+            # then call the final segment with array_args and unwrap.
+            parts = array_path.split(".")
+            owner = self._navigate(target, parts[:-1])
+            res = getattr(owner, parts[-1])(*array_args)
+            arr = res[0] if isinstance(res, tuple) else res
+        else:
+            arr = self._navigate(target, array_path.split("."))
         rows: list[dict] = []
         for idx, raw in enumerate(arr):
             # VARIANT arrays come back as raw PyIDispatch; wrap each so late
@@ -426,7 +436,8 @@ class ElectricalApp:
 
     def array_ops(self, array_path: str | None, ops: list[dict],
                   select: dict | None = None, root: str = "application",
-                  limit: int | None = None) -> list[dict]:
+                  limit: int | None = None,
+                  array_args: list | None = None) -> list[dict]:
         """Enumerate a COM array and run members on each element.
 
         COM arrays (``VARIANT`` of ``IDispatch``) come back from a plain
@@ -434,9 +445,13 @@ class ElectricalApp:
         navigates to such an array, wraps each element, optionally filters by
         ``select`` (``{"member","args","equals"}``), and runs ``ops`` on each
         matching element — returning ``{"index", "results"}`` per element.
+
+        ``array_args`` supplies arguments to the final array-producing call
+        when it takes parameters (e.g. ``getProjectSymbolsFromFileID(fileID)``).
         """
         return self._worker.submit(
-            lambda: self._array_ops_locked(array_path, select, ops, root, limit))
+            lambda: self._array_ops_locked(array_path, select, ops, root, limit,
+                                           array_args))
 
     def list_enums(self, name: str | None = None) -> dict[str, dict[str, int]]:
         """Read COM enum members from the installed type library.

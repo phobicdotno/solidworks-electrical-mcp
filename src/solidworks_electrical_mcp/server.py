@@ -69,7 +69,16 @@ mcp = FastMCP(
         "{'member':'process','args':[0]}]).  3=kProjectDataTitleBlock, "
         "0=kProjectDataUpdate. NOTE: process returns 45 (EW_PROJECT_OPENED) if "
         "drawings are open — close open documents first, or just close+reopen a "
-        "single folio to re-render its title block.\n\n"
+        "single folio to re-render its title block.\n"
+        "• List/edit what's drawn ON a folio: symbols come from "
+        "getEwProjectSymbolManager.getProjectSymbolsFromFileID(fileID) — use "
+        "array_ops(..., array_args=[fileID]). Each IEwProjectSymbolX has "
+        "getObjectID (the component, resolve via getEwProjectComponentManager."
+        "findEwProjectComponentByID), getX/YPosition (+set to move/align), "
+        "getRotationAngle, getRow/ColumnMark. Line-diagram folios (kFileLineDiagram"
+        "=1) carry symbols + IEwProjectLineX lines, NOT IEwProjectWireX wires "
+        "(wires live on schematic folios). After moving symbols, close+reopen the "
+        "folio to redraw.\n\n"
         "Known limits: the doc catalog is INCOMPLETE — use typelib_members(iface) "
         "for ground truth (e.g. IEwProjectFileX.setRevisionTranslatableTextAt is "
         "real but absent from get_api). REVISIONS: the only revision member in "
@@ -389,7 +398,8 @@ def call_ops(target: str | None, ops: list[dict],
 
 @mcp.tool
 def array_ops(array: str, ops: list[dict], select: dict | None = None,
-              root: str = "application", limit: int | None = None) -> dict:
+              root: str = "application", limit: int | None = None,
+              array_args: list | None = None) -> dict:
     """Enumerate a COM array and run members on each (optionally filtered) item.
 
     A plain ``call`` that returns a collection (``VARIANT`` of ``IDispatch``)
@@ -404,18 +414,30 @@ def array_ops(array: str, ops: list[dict], select: dict | None = None,
     select : optional ``{"member": str, "args": [...], "equals": value}`` —
         keep only elements whose ``member(*args)`` equals ``value``.
     limit : optional cap on number of returned elements.
+    array_args : arguments for the final array-producing call when it takes
+        parameters, e.g. ``getProjectSymbolsFromFileID(fileID)``.
 
     Returns ``{"ok", "rows": [{"index", "results": [...]}, ...]}``.
 
-    Example — read tag + description of every project file::
+    Examples
+    --------
+    Read tag + description of every project file::
 
         array_ops("getEwProjectCurrent.getEwProjectFileManager.getEwProjectFileArray",
                   [{"member": "getTag", "args": []},
                    {"member": "getDescription", "args": ["en"]}])
+
+    List the symbols on a folio (array from a method with an argument)::
+
+        array_ops("getEwProjectCurrent.getEwProjectSymbolManager.getProjectSymbolsFromFileID",
+                  [{"member": "getObjectID", "args": []},
+                   {"member": "getXPosition", "args": []},
+                   {"member": "getYPosition", "args": []}],
+                  array_args=[<fileID>])
     """
     try:
         rows = com_mod.app().array_ops(array, ops, select=select, root=root,
-                                       limit=limit)
+                                       limit=limit, array_args=array_args)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "rows": rows}
