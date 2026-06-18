@@ -378,7 +378,17 @@ class ElectricalApp:
         parts = path.split(".")
         target = self._navigate(target, parts[:-1])
         leaf = getattr(target, parts[-1])
-        result = leaf if args is None else leaf(*args)
+        if args is not None:
+            result = leaf(*args)
+        elif callable(leaf):
+            # Auto-call a zero-arg getter leaf so the documented recipe
+            # ``call('getEwProjectCurrent.getName')`` returns the value instead
+            # of a bound-method repr. This mirrors how _navigate auto-calls
+            # callable getters on intermediate path segments. Pass an explicit
+            # ``args`` list when a member needs parameters.
+            result = leaf()
+        else:
+            result = leaf
         # Coerce here, on the apartment thread, so no COM object escapes.
         return coerce_value(result)
 

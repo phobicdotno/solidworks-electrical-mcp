@@ -25,3 +25,6 @@ Thumbs.db
 # Local cache for the doc scraper
 .cache/
 .cache_*
+
+# Local scratch / live-COM verification drivers (may embed the licence key)
+_verify/
