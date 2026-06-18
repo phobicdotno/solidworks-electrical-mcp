@@ -253,6 +253,23 @@ class ElectricalApp:
                     "or nothing is currently active)")
         return target
 
+    def _eval_member(self, obj: Any, member_path: str,
+                     args: list | None) -> Any:
+        """Evaluate a (possibly dotted) member path on ``obj``.
+
+        Intermediate segments are auto-called with no args and their
+        ``(object, errorCode)`` tuples unwrapped (via ``_navigate``), so a
+        single op can chain object->object — e.g. ``getEwProjectComponent``
+        (returns the component) ``.getParentID`` (reads its parent). The
+        final segment is called with ``args`` (or returned uncalled when
+        ``args`` is None, preserving the single-member convention). For a
+        plain single-segment member this is identical to the old behaviour.
+        """
+        parts = member_path.split(".")
+        target = obj if len(parts) == 1 else self._navigate(obj, parts[:-1])
+        leaf = getattr(target, parts[-1])
+        return leaf if args is None else leaf(*args)
+
     def _call_ops_locked(self, target_path: str | None,
                          ops: list[dict], root: str) -> list[Any]:
         target = self._root_target(root)
@@ -260,9 +277,7 @@ class ElectricalApp:
             target = self._navigate(target, target_path.split("."))
         results: list[Any] = []
         for op in ops:
-            member = getattr(target, op["member"])
-            a = op.get("args")
-            result = member if a is None else member(*a)
+            result = self._eval_member(target, op["member"], op.get("args"))
             results.append(coerce_value(result))
         return results
 
@@ -292,16 +307,21 @@ class ElectricalApp:
             except Exception:
                 el = raw
             if select is not None:
-                sv = getattr(el, select["member"])(*(select.get("args") or []))
+                sv = self._eval_member(el, select["member"],
+                                       select.get("args") or [])
                 sv = sv[0] if isinstance(sv, tuple) else sv
                 if sv != select.get("equals"):
                     continue
             results = []
             for op in (ops or []):
-                member = getattr(el, op["member"])
-                a = op.get("args")
-                r = member if a is None else member(*a)
-                results.append(coerce_value(r))
+                # Isolate per-op failures so one element missing a chained
+                # object (e.g. a part with no component -> NULL) does not abort
+                # the whole enumeration; that cell reports its error instead.
+                try:
+                    r = self._eval_member(el, op["member"], op.get("args"))
+                    results.append(coerce_value(r))
+                except Exception as exc:  # noqa: BLE001
+                    results.append({"error": f"{type(exc).__name__}: {exc}"})
             rows.append({"index": idx, "results": results})
             if limit and len(rows) >= limit:
                 break
