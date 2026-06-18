@@ -22,6 +22,7 @@ may differ from the 2026 docs the catalogue is built from).
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -142,6 +143,29 @@ def _coerce_arg(a: Any) -> Any:
 
 def _coerce_args(args: list | None) -> list | None:
     return None if args is None else [_coerce_arg(a) for a in args]
+
+
+_SEGMENT_RE = re.compile(r"^([A-Za-z_]\w*)\((.*)\)$")
+
+
+def _parse_segment(seg: str) -> tuple[str, list | None]:
+    """Split a path segment into ``(name, args)``. ``"getName"`` ->
+    ``("getName", None)`` (no call args — navigated as before). A
+    parenthesised segment ``"findEwProjectSymbolByID(42)"`` ->
+    ``("findEwProjectSymbolByID", [42])`` so a path can fetch by id/index.
+    Inner args are parsed as a JSON array (single quotes tolerated)."""
+    m = _SEGMENT_RE.match(seg.strip())
+    if not m:
+        return seg, None
+    name, inner = m.group(1), m.group(2).strip()
+    if inner == "":
+        return name, []
+    for candidate in (inner, inner.replace("'", '"')):
+        try:
+            return name, json.loads("[" + candidate + "]")
+        except Exception:
+            continue
+    raise ValueError(f"could not parse args in path segment {seg!r}")
 
 
 class _ComWorker:
@@ -277,10 +301,21 @@ class ElectricalApp:
 
     def _navigate(self, target: Any, parts: list[str]) -> Any:
         """Walk dotted path segments, auto-calling callable getters and
-        unwrapping ``(object, errorCode)`` tuples (see ``_call_locked``)."""
+        unwrapping ``(object, errorCode)`` tuples (see ``_call_locked``).
+
+        A segment may carry inline args — ``findEwProjectSymbolByID(123)`` or
+        ``getEwProjectSymbolPointAt(0)`` — so a path can fetch an object by id
+        (or index) and keep navigating, e.g.
+        ``…getEwProjectSymbolManager.findEwProjectSymbolByID(42).getEwProjectSymbolPointArray``.
+        Args are parsed as a JSON array (single quotes tolerated). A bare
+        segment with no parens behaves exactly as before."""
         for p in parts:
-            attr = getattr(target, p)
-            if callable(attr):
+            name, seg_args = _parse_segment(p)
+            attr = getattr(target, name)
+            if seg_args is not None:
+                res = attr(*_coerce_args(seg_args))
+                target = res[0] if isinstance(res, tuple) else res
+            elif callable(attr):
                 res = attr()
                 target = res[0] if isinstance(res, tuple) else res
             else:
