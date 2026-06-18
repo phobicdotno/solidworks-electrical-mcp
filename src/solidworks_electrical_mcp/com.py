@@ -106,6 +106,44 @@ def coerce_value(v: Any) -> Any:
         return repr(v)
 
 
+# VARTYPE names accepted in a "$variant" arg spec. Enough to pass typed
+# SAFEARRAYs (e.g. setSelectionFiles wants VT_ARRAY|VT_I4) and typed scalars.
+_VT_NAMES = (
+    "VT_I2 VT_I4 VT_R4 VT_R8 VT_BSTR VT_BOOL VT_VARIANT VT_I1 VT_UI1 VT_UI2 "
+    "VT_UI4 VT_INT VT_UINT VT_ARRAY VT_DISPATCH VT_UNKNOWN VT_DATE"
+).split()
+
+
+def _vt_code(spec: str) -> int:
+    import pythoncom  # type: ignore
+    code = 0
+    for part in spec.replace("+", "|").split("|"):
+        name = part.strip()
+        if name not in _VT_NAMES:
+            raise ValueError(
+                f"unknown VARTYPE {name!r} in $variant spec {spec!r}")
+        code |= getattr(pythoncom, name)
+    return code
+
+
+def _coerce_arg(a: Any) -> Any:
+    """Turn a ``{"$variant": "VT_ARRAY|VT_I4", "value": [...]}`` marker into a
+    pywin32 typed ``VARIANT`` so methods that demand a specific SAFEARRAY/VARTYPE
+    (e.g. ``setSelectionFiles`` needs ``VT_ARRAY|VT_I4``, not the ``VT_VARIANT``
+    array pywin32 makes from a bare Python list) get the right COM type. Plain
+    args — including ordinary lists — pass through unchanged."""
+    if isinstance(a, dict) and "$variant" in a:
+        from win32com.client import VARIANT  # type: ignore
+        return VARIANT(_vt_code(a["$variant"]), _coerce_arg(a.get("value")))
+    if isinstance(a, list):
+        return [_coerce_arg(x) for x in a]
+    return a
+
+
+def _coerce_args(args: list | None) -> list | None:
+    return None if args is None else [_coerce_arg(a) for a in args]
+
+
 class _ComWorker:
     """Single dedicated thread that owns every COM call.
 
@@ -268,7 +306,7 @@ class ElectricalApp:
         parts = member_path.split(".")
         target = obj if len(parts) == 1 else self._navigate(obj, parts[:-1])
         leaf = getattr(target, parts[-1])
-        return leaf if args is None else leaf(*args)
+        return leaf if args is None else leaf(*_coerce_args(args))
 
     def _call_ops_locked(self, target_path: str | None,
                          ops: list[dict], root: str) -> list[Any]:
@@ -277,8 +315,15 @@ class ElectricalApp:
             target = self._navigate(target, target_path.split("."))
         results: list[Any] = []
         for op in ops:
-            result = self._eval_member(target, op["member"], op.get("args"))
-            results.append(coerce_value(result))
+            # Isolate per-op failures (as array_ops does) so a stateful build
+            # sequence reports exactly which op threw instead of aborting with
+            # no indication of where. The error cell lets the caller stop
+            # interpreting after the first failure if the sequence is ordered.
+            try:
+                result = self._eval_member(target, op["member"], op.get("args"))
+                results.append(coerce_value(result))
+            except Exception as exc:  # noqa: BLE001
+                results.append({"error": f"{type(exc).__name__}: {exc}"})
         return results
 
     def _array_ops_locked(self, array_path: str | None, select: dict | None,
@@ -294,7 +339,7 @@ class ElectricalApp:
             # then call the final segment with array_args and unwrap.
             parts = array_path.split(".")
             owner = self._navigate(target, parts[:-1])
-            res = getattr(owner, parts[-1])(*array_args)
+            res = getattr(owner, parts[-1])(*_coerce_args(array_args))
             arr = res[0] if isinstance(res, tuple) else res
         else:
             arr = self._navigate(target, array_path.split("."))
@@ -399,7 +444,7 @@ class ElectricalApp:
         target = self._navigate(target, parts[:-1])
         leaf = getattr(target, parts[-1])
         if args is not None:
-            result = leaf(*args)
+            result = leaf(*_coerce_args(args))
         elif callable(leaf):
             # Auto-call a zero-arg getter leaf so the documented recipe
             # ``call('getEwProjectCurrent.getName')`` returns the value instead
