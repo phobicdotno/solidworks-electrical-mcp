@@ -506,6 +506,43 @@ def array_ops(array: str, ops: list[dict], select: dict | None = None,
 
 
 @mcp.tool
+def shift_folio_numbers(threshold: int, delta: int,
+                        place_file_id: int | None = None,
+                        place_at: int | None = None, dry_run: bool = True,
+                        root: str = "application") -> dict:
+    """Cascade folio page numbers (``getTagNumber``) to insert or remove a sheet.
+
+    Folio page marks must be unique, so slotting a folio in at page N requires
+    every folio numbered >= N to move. This derives the shift from the live
+    folio set and applies it collision-safe — no hand-built id list, no
+    transient duplicate marks.
+
+    Parameters
+    ----------
+    threshold : the page number at/after which folios move.
+    delta : ``+1`` to open a slot (insert), ``-1`` to close a gap (after delete).
+    place_file_id : optional folio id to drop into the freed slot. It is parked
+        at a temp number during the cascade so it never blocks a target, then
+        set to ``place_at``.
+    place_at : the final page number for ``place_file_id`` (usually == threshold).
+    dry_run : default True — returns the full planned ``plan`` without mutating.
+        Set False to apply; the result then carries ``results`` + any ``errors``
+        (ops whose ``rc`` was non-zero).
+
+    Example — insert the new 16DI folio (id 26375) as page 27, push the rest +1::
+
+        shift_folio_numbers(27, 1, place_file_id=26375, place_at=27, dry_run=False)
+    """
+    try:
+        out = com_mod.app().shift_folio_numbers(
+            threshold, delta, place_file_id=place_file_id, place_at=place_at,
+            dry_run=dry_run, root=root)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, **out}
+
+
+@mcp.tool
 def get_enum(name: str | None = None) -> dict:
     """Resolve COM enum members from the installed SW Electrical type library.
 

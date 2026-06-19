@@ -407,6 +407,100 @@ class ElectricalApp:
                 break
         return rows
 
+    def _shift_folio_numbers_locked(self, threshold: int, delta: int,
+                                    place_file_id: int | None,
+                                    place_at: int | None, dry_run: bool,
+                                    root: str) -> dict:
+        """Cascade folio page numbers (``getTagNumber``) to insert/remove a sheet.
+
+        Page marks must be unique, so dropping a folio in at page N means every
+        folio numbered >= N must shift by ``delta`` (+1 to insert, -1 to close a
+        gap). This reads the live folio set, computes the shift, and applies it
+        collision-safe:
+
+        * the inserted folio (``place_file_id``) is parked at a temp number
+          (max+1000) so it never blocks a slot mid-cascade;
+        * the remaining folios with ``tagNumber >= threshold`` shift by ``delta``
+          processed in an order that frees each target before it is written
+          (descending current number when delta>0, ascending when delta<0);
+        * finally ``place_file_id`` is set to ``place_at``.
+
+        ``dry_run=True`` returns the planned changes without touching anything.
+        """
+        proj = self._navigate(self._root_target(root), ["getEwProjectCurrent"])
+        fm = self._navigate(proj, ["getEwProjectFileManager"])
+        arr = self._navigate(fm, ["getEwProjectFileArray"])
+        client = _require_pywin32()
+
+        def _u(x):
+            return x[0] if isinstance(x, tuple) else x
+
+        folios: list[tuple[int, int]] = []
+        max_num = 0
+        for raw in arr:
+            try:
+                el = client.Dispatch(raw)
+            except Exception:
+                el = raw
+            fid = _u(el.getID())
+            tn = _u(el.getTagNumber())
+            folios.append((fid, tn))
+            if tn > max_num:
+                max_num = tn
+
+        place_from = None
+        if place_file_id is not None:
+            place_from = next((tn for fid, tn in folios
+                               if fid == place_file_id), None)
+            if place_from is None:
+                return {"error": f"place_file_id {place_file_id} is not a folio "
+                                 "in the current project"}
+
+        affected = sorted(
+            [(fid, tn) for fid, tn in folios
+             if tn >= threshold and fid != place_file_id],
+            key=lambda x: x[1], reverse=(delta > 0))
+
+        plan: list[dict] = []
+        if place_file_id is not None:
+            plan.append({"id": place_file_id, "from": place_from,
+                         "to": place_at, "role": "inserted"})
+        for fid, tn in affected:
+            plan.append({"id": fid, "from": tn, "to": tn + delta,
+                         "role": "shift"})
+
+        if dry_run:
+            return {"dry_run": True, "threshold": threshold, "delta": delta,
+                    "shift_count": len(affected), "max_number_before": max_num,
+                    "plan": plan}
+
+        temp = max_num + 1000
+
+        def _set(fid: int, num: int):
+            f = self._navigate(fm, [f"findEwProjectFileByID({fid})"])
+            rc = _u(f.setTagNumber(num))
+            _u(f.update())
+            return rc
+
+        results: list[dict] = []
+        # 1. park the inserted folio out of the way so no slot is blocked.
+        if place_file_id is not None:
+            results.append({"id": place_file_id, "from": place_from,
+                            "to": temp, "role": "park", "rc": _set(place_file_id, temp)})
+        # 2. shift the tail, each target already vacated by processing order.
+        for fid, tn in affected:
+            results.append({"id": fid, "from": tn, "to": tn + delta,
+                            "role": "shift", "rc": _set(fid, tn + delta)})
+        # 3. drop the inserted folio into its final slot.
+        if place_file_id is not None and place_at is not None:
+            results.append({"id": place_file_id, "from": temp, "to": place_at,
+                            "role": "place", "rc": _set(place_file_id, place_at)})
+
+        nonzero = [r for r in results if r.get("rc") not in (0, None)]
+        return {"dry_run": False, "threshold": threshold, "delta": delta,
+                "applied": len(results), "errors": nonzero,
+                "max_number_before": max_num, "results": results}
+
     def _list_enums_locked(self, name: str | None) -> dict[str, dict[str, int]]:
         if self._enums is None:
             import pythoncom  # type: ignore
@@ -562,6 +656,16 @@ class ElectricalApp:
         return self._worker.submit(
             lambda: self._array_ops_locked(array_path, select, ops, root, limit,
                                            array_args))
+
+    def shift_folio_numbers(self, threshold: int, delta: int,
+                            place_file_id: int | None = None,
+                            place_at: int | None = None, dry_run: bool = True,
+                            root: str = "application") -> dict:
+        """Cascade folio page numbers to insert (delta=+1) or close (delta=-1) a
+        sheet, collision-safe. ``dry_run`` defaults True — preview first."""
+        return self._worker.submit(
+            lambda: self._shift_folio_numbers_locked(
+                threshold, delta, place_file_id, place_at, dry_run, root))
 
     def list_enums(self, name: str | None = None) -> dict[str, dict[str, int]]:
         """Read COM enum members from the installed type library.
