@@ -40,7 +40,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_folder, rename_folder, delete_folder,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
     add_location, attach_manufacturer_part,
-    place_symbol, remove_symbol,
+    place_symbol, remove_symbol, move_symbols,
     delete_component.
 """
 
@@ -1039,6 +1039,20 @@ def place_symbol(tag: str, symbol_name: str, x: float, y: float,
 def remove_symbol(symbol_id: int) -> dict:
     """Delete one drawn symbol, closing the folio first if the GUI has it."""
     return _run(wf.remove_symbol, symbol_id=symbol_id)
+
+
+@mcp.tool
+def move_symbols(moves: list, box: dict | None = None,
+                 dry_run: bool = True) -> dict:
+    """Move several symbols on ONE folio in a single pass.
+
+    Prefer this to repeated move_symbol: the project line array is the only
+    route to a folio's lines, so moving one at a time walks every line in
+    the project per symbol and closes and reopens the folio each time. Here
+    the lines are read once and the folio is closed once for the batch.
+    ``moves`` is a list of {"symbol_id", "dx", "dy"}.
+    """
+    return _run(wf.move_symbols, moves=moves, box=box, dry_run=dry_run)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

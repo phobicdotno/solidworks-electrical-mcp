@@ -2229,6 +2229,98 @@ def move_symbol(app: Any, client: Any, symbol_id: int, dx: float = 0.0,
                              "update_rc": m.get("update_rc")} for m in moves]}
 
 
+def move_symbols(app: Any, client: Any, moves: list,
+                 box: dict | None = None, dry_run: bool = True) -> dict:
+    """Move several symbols on ONE folio in a single pass.
+
+    Doing it one at a time is quadratic in practice: the project line array
+    is the only way to reach a folio's lines, so every single move walks
+    every line in the project, and the folio is closed and reopened each
+    time. Here the lines are read once, the folio is closed once, and each
+    symbol and its wire ends move inside that window.
+
+    ``moves`` is a list of ``{"symbol_id": int, "dx": float, "dy": float}``.
+    """
+    proj = _project(app)
+    smgr = _u(proj.getEwProjectSymbolManager())
+    bx = {**GO_BOX, **(box or {})}
+    jobs = []
+    fid = None
+    for m in moves:
+        sym = _u(smgr.getProjectSymbolByID(int(m["symbol_id"])))
+        if sym is None:
+            raise LookupError(f"no symbol with id {m['symbol_id']}")
+        f_id = _u(sym.getFileID())
+        if fid is None:
+            fid = f_id
+        elif f_id != fid:
+            raise ValueError(
+                "all the symbols must be on one folio; got "
+                f"{fid} and {f_id}")
+        jobs.append({"sym": sym, "id": _u(sym.getID()),
+                     "dx": float(m.get("dx", 0.0)),
+                     "dy": float(m.get("dy", 0.0)),
+                     "ox": float(_u(sym.getXPosition())),
+                     "oy": float(_u(sym.getYPosition())),
+                     "points": _symbol_points(sym)})
+
+    lines = _folio_lines(app, client, fid)      # ONE scan for the whole batch
+    for j in jobs:
+        j["line_moves"] = []
+        for ln in lines:
+            ends = []
+            for tag, lx, ly in (("start", ln["x1"], ln["y1"]),
+                                ("end", ln["x2"], ln["y2"])):
+                if any(abs(lx - p["x"]) < 0.01 and abs(ly - p["y"]) < 0.01
+                       for p in j["points"]):
+                    ends.append(tag)
+            if ends:
+                j["line_moves"].append({"line": ln, "ends": ends})
+
+    out_of_box = []
+    for j in jobs:
+        for p in j["points"]:
+            nx, ny = p["x"] + j["dx"], p["y"] + j["dy"]
+            if not (bx["x_min"] - _SNAP <= nx <= bx["x_max"] + _SNAP
+                    and bx["y_min"] - _SNAP <= ny <= bx["y_max"] + _SNAP):
+                out_of_box.append({"symbol_id": j["id"], "x": nx, "y": ny})
+    plan = {"file_id": fid, "count": len(jobs), "box": bx,
+            "moves": [{"symbol_id": j["id"], "from": [j["ox"], j["oy"]],
+                       "to": [j["ox"] + j["dx"], j["oy"] + j["dy"]],
+                       "lines": len(j["line_moves"])} for j in jobs],
+            "out_of_box": out_of_box}
+    if out_of_box:
+        return {"ok": False, "dry_run": dry_run, "plan": plan,
+                "error": "some points would land outside the drawable box"}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    f = find_folio(app, client, file_id=fid)
+    was_open = bool(_u(f.isOpen()))
+    steps = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "dry_run": False, "plan": plan,
+                    "steps": steps, "error": "could not close the folio"}
+    for j in jobs:
+        _rc(j["sym"].setXPosition(j["ox"] + j["dx"]))
+        _rc(j["sym"].setYPosition(j["oy"] + j["dy"]))
+        _rc(j["sym"].update())
+        for lm in j["line_moves"]:
+            ln, ends = lm["line"], lm["ends"]
+            if "start" in ends:
+                _rc(ln["obj"].setStartPointXPosition(ln["x1"] + j["dx"]))
+                _rc(ln["obj"].setStartPointYPosition(ln["y1"] + j["dy"]))
+            if "end" in ends:
+                _rc(ln["obj"].setEndPointXPosition(ln["x2"] + j["dx"]))
+                _rc(ln["obj"].setEndPointYPosition(ln["y2"] + j["dy"]))
+            _rc(ln["obj"].update())
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    return {"ok": True, "dry_run": False, "plan": plan, "steps": steps}
+
+
 def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
                         file_id: int | None = None,
                         min_spacing: float | None = None,
