@@ -2054,3 +2054,239 @@ def delete_folio(app: Any, client: Any, file_id: int) -> dict:
     rc = _rc(f.remove())
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc)}
+
+
+# --------------------------------------------------------------------------
+# Drawing rules: spacing, the drawable box, and moving without breaking wires
+
+# MR design rule: every drawn coordinate and every line end stays inside this
+# box on a schematic sheet. Override per call where a sheet differs.
+GO_BOX = {"x_min": 50.0, "x_max": 370.0, "y_min": 80.0, "y_max": 240.0}
+
+# MR design rule: leave at least ONE grid dot between connections. The sheet
+# grid is 10 mm, so two connection points must be at least 20 mm apart, which
+# puts a dot between them. Corroborated twice on this project: 20 mm is by far
+# the most common gap between points of different symbols (156 occurrences),
+# and relay contacts sit 30 mm apart by ORIGIN on all 12 sheets that carry a
+# row of them, which places their points exactly 20 mm apart.
+GRID_PITCH = 10.0
+# Dot to dot is the minimum: two connection points may sit on adjacent grid
+# dots but no closer.
+MIN_POINT_SPACING = GRID_PITCH
+# A device's TEXT is wider than its connections. A relay contact's label runs
+# about three grid pitches, so two of them on one row need their ORIGINS that
+# far apart or the labels collide. This is why every relay row on this project
+# is drawn at 30 mm origin spacing.
+MIN_TEXT_SYMBOL_ORIGIN_SPACING = 3 * GRID_PITCH
+
+_SNAP = 0.001
+
+
+def _symbol_points(s: Any) -> list:
+    out = []
+    try:
+        n = int(_u(s.getEwProjectSymbolPointCount()) or 0)
+    except Exception:  # noqa: BLE001
+        return out
+    for i in range(n):
+        p = _u(s.getEwProjectSymbolPointAt(i))
+        if p is None:
+            continue
+        pos = _u(p.getPointPosition())
+        if pos is None:
+            continue
+        out.append({"i": i, "mesh": _u(p.getMeshID()),
+                    "x": float(_u(pos.getXCoordinate())),
+                    "y": float(_u(pos.getYCoordinate()))})
+    return out
+
+
+def _folio_lines(app: Any, client: Any, file_id: int) -> list:
+    proj = _project(app)
+    lmgr = _u(proj.getEwProjectLineManager())
+    out = []
+    for ln in _each(client, _u(lmgr.getEwProjectLineArray())):
+        if _u(ln.getFileID()) != file_id:
+            continue
+        out.append({"obj": ln, "id": _u(ln.getID()),
+                    "x1": float(_u(ln.getStartPointXPosition())),
+                    "y1": float(_u(ln.getStartPointYPosition())),
+                    "x2": float(_u(ln.getEndPointXPosition())),
+                    "y2": float(_u(ln.getEndPointYPosition()))})
+    return out
+
+
+def move_symbol(app: Any, client: Any, symbol_id: int, dx: float = 0.0,
+                dy: float = 0.0, to_x: float | None = None,
+                to_y: float | None = None, move_lines: bool = True,
+                box: dict | None = None, dry_run: bool = True) -> dict:
+    """Move a symbol and drag every wire end that sits on its connections.
+
+    A symbol carries its connection points with it, but the lines drawn to
+    those points do NOT follow: move the symbol alone and the wires stay
+    where they were, leaving the drawing connected in the database and wrong
+    on the sheet. Every line end that coincides with one of this symbol's
+    connection points is moved by the same delta.
+
+    The move is refused when it would put a connection point or a line end
+    outside the drawable box.
+    """
+    proj = _project(app)
+    smgr = _u(proj.getEwProjectSymbolManager())
+    sym = _u(smgr.getProjectSymbolByID(int(symbol_id)))
+    if sym is None:
+        raise LookupError(f"no symbol with id {symbol_id}")
+    fid = _u(sym.getFileID())
+    ox, oy = float(_u(sym.getXPosition())), float(_u(sym.getYPosition()))
+    if to_x is not None:
+        dx = to_x - ox
+    if to_y is not None:
+        dy = to_y - oy
+    if abs(dx) < _SNAP and abs(dy) < _SNAP:
+        raise ValueError("the move is zero")
+
+    pts = _symbol_points(sym)
+    lines = _folio_lines(app, client, fid)
+    moves = []
+    for ln in lines:
+        ends = []
+        for tag, lx, ly in (("start", ln["x1"], ln["y1"]),
+                            ("end", ln["x2"], ln["y2"])):
+            for p in pts:
+                if abs(lx - p["x"]) < 0.01 and abs(ly - p["y"]) < 0.01:
+                    ends.append(tag)
+                    break
+        if ends:
+            moves.append({"line_id": ln["id"], "ends": ends, "obj": ln["obj"],
+                          "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]]})
+
+    bx = {**GO_BOX, **(box or {})}
+    after_pts = [{"x": p["x"] + dx, "y": p["y"] + dy} for p in pts]
+    out_of_box = [p for p in after_pts
+                  if not (bx["x_min"] - _SNAP <= p["x"] <= bx["x_max"] + _SNAP
+                          and bx["y_min"] - _SNAP <= p["y"] <= bx["y_max"] + _SNAP)]
+    for m in moves:
+        x1, y1, x2, y2 = m["from"]
+        nx1 = x1 + dx if "start" in m["ends"] else x1
+        ny1 = y1 + dy if "start" in m["ends"] else y1
+        nx2 = x2 + dx if "end" in m["ends"] else x2
+        ny2 = y2 + dy if "end" in m["ends"] else y2
+        m["to"] = [nx1, ny1, nx2, ny2]
+        for px, py in ((nx1, ny1), (nx2, ny2)):
+            if not (bx["x_min"] - _SNAP <= px <= bx["x_max"] + _SNAP
+                    and bx["y_min"] - _SNAP <= py <= bx["y_max"] + _SNAP):
+                out_of_box.append({"x": px, "y": py, "line_id": m["line_id"]})
+
+    plan = {"symbol_id": symbol_id, "file_id": fid,
+            "from": [ox, oy], "to": [ox + dx, oy + dy], "dx": dx, "dy": dy,
+            "points_before": [{"x": p["x"], "y": p["y"]} for p in pts],
+            "points_after": after_pts,
+            "lines_to_drag": [{"line_id": m["line_id"], "ends": m["ends"],
+                               "from": m["from"], "to": m["to"]}
+                              for m in moves],
+            "box": bx, "out_of_box": out_of_box}
+    if out_of_box:
+        return {"ok": False, "dry_run": dry_run, "plan": plan,
+                "error": f"the move puts {len(out_of_box)} point(s) outside "
+                         f"the drawable box {bx}"}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    f = find_folio(app, client, file_id=fid)
+    was_open = bool(_u(f.isOpen()))
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "dry_run": False, "plan": plan, "steps": steps,
+                    "error": "could not close the folio; refusing to move "
+                             "into a stale editor copy"}
+    steps["setXPosition"] = _rc(sym.setXPosition(ox + dx))
+    steps["setYPosition"] = _rc(sym.setYPosition(oy + dy))
+    steps["symbol.update"] = _rc(sym.update())
+    if move_lines:
+        for m in moves:
+            ln = m["obj"]
+            nx1, ny1, nx2, ny2 = m["to"]
+            if "start" in m["ends"]:
+                _rc(ln.setStartPointXPosition(nx1))
+                _rc(ln.setStartPointYPosition(ny1))
+            if "end" in m["ends"]:
+                _rc(ln.setEndPointXPosition(nx2))
+                _rc(ln.setEndPointYPosition(ny2))
+            m["update_rc"] = _rc(ln.update())
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    return {"ok": True, "dry_run": False, "plan": plan, "steps": steps,
+            "lines_moved": [{"line_id": m["line_id"], "to": m["to"],
+                             "update_rc": m.get("update_rc")} for m in moves]}
+
+
+def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
+                        file_id: int | None = None,
+                        min_spacing: float | None = None,
+                        box: dict | None = None) -> dict:
+    """Report connection points that crowd each other or fall outside the box.
+
+    Two checks, both on the real geometry rather than on intent: connection
+    points of DIFFERENT symbols closer than ``min_spacing`` along a shared
+    row or column, and any connection point or line end outside the drawable
+    box. Reports only; nothing is moved.
+    """
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+    fid = row["id"]
+    proj = _project(app)
+    smgr = _u(proj.getEwProjectSymbolManager())
+    cmgr = _u(proj.getEwProjectComponentManager())
+    bx = {**GO_BOX, **(box or {})}
+    gap = MIN_POINT_SPACING if min_spacing is None else float(min_spacing)
+
+    pts = []
+    for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid))):
+        oid = _u(s.getObjectID())
+        tag = None
+        if isinstance(oid, int) and oid > 0:
+            c = _u(cmgr.findEwProjectComponentByID(oid))
+            if c is not None:
+                tag = str(_u(c.getTag()))
+        for p in _symbol_points(s):
+            pts.append({"symbol_id": _u(s.getID()), "tag": tag,
+                        "name": _u(s.getEwSymbolName()), **p})
+
+    crowded = []
+    for i, p in enumerate(pts):
+        for q in pts[i + 1:]:
+            if p["symbol_id"] == q["symbol_id"]:
+                continue
+            same_row = abs(p["y"] - q["y"]) < 0.5
+            same_col = abs(p["x"] - q["x"]) < 0.5
+            if not (same_row or same_col):
+                continue
+            d = abs(p["x"] - q["x"]) if same_row else abs(p["y"] - q["y"])
+            if _SNAP < d < gap - _SNAP:
+                crowded.append({"gap": round(d, 3), "axis":
+                                "row" if same_row else "column",
+                                "a": {"tag": p["tag"], "symbol_id": p["symbol_id"],
+                                      "x": p["x"], "y": p["y"]},
+                                "b": {"tag": q["tag"], "symbol_id": q["symbol_id"],
+                                      "x": q["x"], "y": q["y"]}})
+
+    def outside(x, y):
+        return not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
+                    and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP)
+
+    out = [{"kind": "connection point", "tag": p["tag"],
+            "symbol_id": p["symbol_id"], "x": p["x"], "y": p["y"]}
+           for p in pts if outside(p["x"], p["y"])]
+    for ln in _folio_lines(app, client, fid):
+        for tag, x, y in (("start", ln["x1"], ln["y1"]),
+                          ("end", ln["x2"], ln["y2"])):
+            if outside(x, y):
+                out.append({"kind": f"line {tag}", "line_id": ln["id"],
+                            "x": x, "y": y})
+    crowded.sort(key=lambda r: r["gap"])
+    return {"folio": row, "min_spacing": gap, "box": bx,
+            "crowded_count": len(crowded), "crowded": crowded,
+            "outside_count": len(out), "outside_box": out,
+            "ok": not crowded and not out}

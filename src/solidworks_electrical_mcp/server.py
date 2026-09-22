@@ -38,7 +38,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_component, clone_component, rename_component,
     renumber_components, audit_tag_roots,
     add_folder, rename_folder, delete_folder,
-    add_folio, delete_folio,
+    add_folio, delete_folio, move_symbol, check_drawing_rules,
     delete_component.
 """
 
@@ -949,6 +949,37 @@ def add_folio(description: str, file_type: str = "folio",
 def delete_folio(file_id: int) -> dict:
     """Remove a page. Refuses while it still carries symbols."""
     return _run(wf.delete_folio, file_id=file_id)
+
+
+@mcp.tool
+def move_symbol(symbol_id: int, dx: float = 0.0, dy: float = 0.0,
+                to_x: float | None = None, to_y: float | None = None,
+                move_lines: bool = True, box: dict | None = None,
+                dry_run: bool = True) -> dict:
+    """Move a symbol and drag every wire end sitting on its connections.
+
+    Lines do not follow a symbol on their own: moving one alone leaves the
+    wires behind, so the sheet shows a break while the database still says
+    connected. The move is refused if it would put a connection point or a
+    line end outside the drawable box.
+    """
+    return _run(wf.move_symbol, symbol_id=symbol_id, dx=dx, dy=dy, to_x=to_x,
+                to_y=to_y, move_lines=move_lines, box=box, dry_run=dry_run)
+
+
+@mcp.tool
+def check_drawing_rules(page: str | int | None = None,
+                        file_id: int | None = None,
+                        min_spacing: float | None = None,
+                        box: dict | None = None) -> dict:
+    """Report crowded connection points and anything outside the drawable box.
+
+    Connection points of different symbols sharing a row or column and closer
+    than ``min_spacing`` (default 30 mm, the house convention measured on
+    this project), plus any point or line end outside the box. Reports only.
+    """
+    return _run(wf.check_drawing_rules, page=page, file_id=file_id,
+                min_spacing=min_spacing, box=box)
 
 
 def _isolate_stdout_from_native_pollution() -> None:
