@@ -46,6 +46,11 @@ SYMBOL_TYPE_NAMES = {
     160: "fluid", 161: "report",
 }
 
+# Symbol types whose getObjectID points at something other than a component
+# (a location, cable, wire, equipotential or harness). Never remove one
+# because its id happens to match a component id.
+NON_COMPONENT_SYMBOL_TYPES = frozenset({110, 115, 120, 125, 130, 135})
+
 EW_ERROR_NAMES = {
     0: "EW_NO_ERROR", 2: "EW_BAD_INPUTS", 3: "EW_FILE_NOT_FOUND",
     8: "EW_DOES_NOT_EXIST", 9: "EW_INVALID_OBJECT", 13: "EW_ALREADY_INSERTED",
@@ -248,31 +253,31 @@ def _part_map(proj: Any, client: Any,
               only: set[int] | None = None) -> dict[int, list[dict]]:
     """component id -> manufacturer parts assigned to it.
 
-    ``only`` restricts the result to those component ids, which skips the
-    text getters for every other part.
+    ``only`` restricts the result to those component ids.
 
-    getObjectID is reused for location-owned parts (rails, ducts), so an id
-    that is also a location id is ambiguous and has to be resolved through
-    getEwProjectComponent. That call is a COM round trip per part, so it is
-    made only for the handful of ambiguous ids rather than for all of them.
+    getObjectID alone is NOT proof of ownership: a manufacturer part can
+    belong to a location (rails, ducts) and object ids are per-table, so the
+    same number means different things. getEwProjectComponent is the only
+    authority, and it costs a COM round trip per part. So getObjectID is used
+    as a cheap pre-filter and every surviving candidate is then confirmed
+    through getEwProjectComponent. Pass ``only`` (callers that want one
+    component's parts always can) and the confirmation runs a handful of
+    times instead of once per part in the project.
     """
     out: dict[int, list[dict]] = {}
-    loc_mgr = _u(proj.getEwProjectLocationManager())
-    location_ids = {_u(loc.getID())
-                    for loc in _each(client, _u(loc_mgr.getEwProjectLocationArray()))}
     mgr = _u(proj.getEwProjectManufacturerPartManager())
     for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
-        comp_id = _u(p.getObjectID())
-        if comp_id in location_ids:
-            try:
-                owner = _u(p.getEwProjectComponent())
-            except Exception:  # noqa: BLE001
-                owner = None
-            if owner is None:
-                continue  # the part belongs to the location, not a component
-            comp_id = _u(owner.getID())
+        if only is not None and _u(p.getObjectID()) not in only:
+            continue  # cheap pre-filter, no COM round trip
+        try:
+            owner = _u(p.getEwProjectComponent())
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is None:
+            continue  # owned by a location or nothing, not by a component
+        comp_id = _u(owner.getID())
         if only is not None and comp_id not in only:
-            continue
+            continue  # the id collided; the real owner is a different component
         out.setdefault(comp_id, []).append({
             "part_id": _u(p.getID()),
             "manufacturer": _u(p.getManufacturer()),
@@ -305,7 +310,6 @@ def list_components(app: Any, client: Any, tag_contains: str | None = None,
                     limit: int = 200) -> dict:
     proj = _project(app)
     mgr = _u(proj.getEwProjectComponentManager())
-    parts = _part_map(proj, client) if with_parts else None
     needle = (tag_contains or "").lower()
     rows = []
     total = 0
@@ -323,9 +327,11 @@ def list_components(app: Any, client: Any, tag_contains: str | None = None,
         matched += 1
         if limit and len(rows) >= limit:
             continue  # keep counting, stop collecting
-        if parts is not None:
-            row["parts"] = parts.get(row["id"], [])
         rows.append(row)
+    if with_parts and rows:
+        parts = _part_map(proj, client, only={r["id"] for r in rows})
+        for row in rows:
+            row["parts"] = parts.get(row["id"], [])
     return {"count": len(rows), "matched": matched, "total_in_project": total,
             "truncated": matched > len(rows), "components": rows}
 
@@ -562,9 +568,12 @@ def _symbols_of(app: Any, client: Any, file_id: int, component_id: int) -> list:
 
 
 def _tag_root(tag: str) -> str:
-    """Letters before the number: "K32" -> "K", "N1N15" -> "N", "T58" -> "T"."""
+    """Letters before the number: "K32" -> "K", "N1N15" -> "N", "T58" -> "T".
+
+    Case is preserved; compare roots with ``casefold()``.
+    """
     m = re.match(r"([A-Za-z]+)", tag.strip().lstrip("-"))
-    return m.group(1).upper() if m else ""
+    return m.group(1) if m else ""
 
 
 def _next_free_slot(app: Any, client: Any, file_id: int,
@@ -580,15 +589,20 @@ def _next_free_slot(app: Any, client: Any, file_id: int,
     name, x0, y0 = ref["symbol_name"], ref["x"], ref["y"]
     proj = _project(app)
     sym_mgr = _u(proj.getEwProjectSymbolManager())
-    row_xs: list[float] = []
+    same_name_xs: list[float] = []   # for the pitch
+    row_xs: list[float] = []         # for occupancy, whatever the symbol is
     for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
-        if _u(s.getEwSymbolName()) != name:
-            continue
         y = _u(s.getYPosition())
-        if isinstance(y, (int, float)) and abs(y - y0) < 0.5:
-            row_xs.append(float(_u(s.getXPosition())))
+        if not isinstance(y, (int, float)) or abs(y - y0) >= 0.5:
+            continue
+        x = float(_u(s.getXPosition()))
+        row_xs.append(x)
+        if _u(s.getEwSymbolName()) == name:
+            same_name_xs.append(x)
+    same_name_xs.sort()
     row_xs.sort()
-    gaps = [b - a for a, b in zip(row_xs, row_xs[1:]) if b - a > 0.01]
+    gaps = [b - a for a, b in zip(same_name_xs, same_name_xs[1:])
+            if b - a > 0.01]
     if gaps:
         pitch = min(gaps)
     elif isinstance(ref["width"], (int, float)) and ref["width"] > 0:
@@ -618,18 +632,27 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
     src_id = _u(src.getID())
     parts = _part_map(proj, client, only={src_id}).get(src_id, [])
     new_bare = new_tag.strip().lstrip("-")
-    src_root = str(_u(src.getTagRoot()) or "").strip() or _tag_root(str(_u(src.getTag())))
+    src_root = (str(_u(src.getTagRoot()) or "").strip()
+                or _tag_root(str(_u(src.getTag()))))
     new_root = _tag_root(new_bare)
-    if new_root != src_root:
+    if new_root.casefold() != src_root.casefold():
         raise ValueError(
             f"tag root must stay {src_root!r} when cloning "
             f"{_u(src.getTagPath())!r} (got {new_bare!r}, root {new_root!r}). "
             "MR rule: a clone keeps its device class; relays are always "
             "rooted K.")
+    if new_root != src_root:
+        # Same class, different casing ("k33"): write the project's casing so
+        # the mark cannot drift from the root the rule names.
+        new_bare = src_root + new_bare[len(new_root):]
     try:
         _find_one_component(app, client, new_bare)
-    except LookupError:
-        pass
+    except LookupError as e:
+        if "ambiguous" in str(e):
+            # Several components already carry this mark; adding another is
+            # never what the caller meant.
+            raise ValueError(
+                f"{new_bare!r} already exists more than once: {e}") from e
     else:
         raise ValueError(f"a component tagged {new_bare!r} already exists")
 
@@ -718,6 +741,26 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         reopened = False
         if folio_row["is_open"]:
             step("folio.close (was open in the GUI)", f.close)
+            close_step = steps[-1]
+            rc_close = close_step.get("rc")
+            if close_step.get("error") or rc_close not in (0, None):
+                # Inserting now would hand the symbols to the editor's stale
+                # copy, which is exactly the silent loss this guard exists to
+                # stop. The component is already created; report and stop.
+                return {
+                    "ok": False, "dry_run": False,
+                    "new_component": _component_row(new, None),
+                    "symbols_placed": [], "plan": plan, "steps": steps,
+                    "errors": [st for st in steps if st.get("error")
+                               or st.get("rc") not in (0, None)],
+                    "folio_was_open": True,
+                    "error": (f"could not close folio {folio_row['page']!r} "
+                              f"({close_step.get('error') or _rc_name(rc_close)}); "
+                              "refusing to insert "
+                              "symbols into a folio open in the GUI because "
+                              "the editor would discard them"),
+                    "undo": f"delete_component(component_id={new_id})",
+                }
             reopened = True
         for s in plan["symbols_to_copy"]:
             sym = _u(f.newEwProjectSymbolFromSymbolType(s["symbol_type_code"]))
@@ -785,6 +828,7 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
     row = _component_row(comp, None)
     cid = row["id"]
     symbols_removed: list[dict] = []
+    swept_all = False
     rc = _rc(comp.remove())
     if rc == 35:
         # Symbols bound to the component block the remove. Manufacturer
@@ -795,16 +839,50 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
         else:
             file_mgr = _u(proj.getEwProjectFileManager())
             folios = list(_each(client, _u(file_mgr.getEwProjectFileArray())))
+            swept_all = True
         for f in folios:
             fid = _u(f.getID())
+            victims = []
             for sym in _each(client,
                              _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
+                # getObjectID is not proof of ownership: label symbols carry
+                # the id of a location, cable, wire or harness, and object ids
+                # are per-table, so one can collide with this component id.
+                # Only symbol types that bind to a component may be removed.
                 if _u(sym.getObjectID()) != cid:
                     continue
+                stype = _u(sym.getEwSymbolType())
+                if stype in NON_COMPONENT_SYMBOL_TYPES:
+                    symbols_removed.append(
+                        {"file_id": fid, "page": _u(f.getTag()),
+                         "symbol_id": _u(sym.getID()),
+                         "skipped": SYMBOL_TYPE_NAMES.get(stype, str(stype))})
+                    continue
+                victims.append(sym)
+            if not victims:
+                continue
+            # Same open-folio hazard as clone: the editor's copy of an open
+            # drawing is written back on close and would resurrect the
+            # symbols (or make the delete look like it never happened).
+            was_open = bool(_u(f.isOpen()))
+            closed_ok = True
+            if was_open:
+                closed_ok = _rc(f.close()) in (0, None)
+            if not closed_ok:
+                for sym in victims:
+                    symbols_removed.append(
+                        {"file_id": fid, "page": _u(f.getTag()),
+                         "symbol_id": _u(sym.getID()),
+                         "skipped": "folio open in the GUI and would not close"})
+                continue
+            for sym in victims:
                 symbols_removed.append({"file_id": fid, "page": _u(f.getTag()),
                                         "symbol_id": _u(sym.getID()),
                                         "rc": _rc(sym.remove())})
+            if was_open:
+                f.open()
         rc = _rc(comp.remove())
+    skipped = [r for r in symbols_removed if r.get("skipped")]
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc), "symbols_removed": symbols_removed,
-            "swept_all_folios": rc != 0 or (bool(symbols_removed) and not pages)}
+            "symbols_skipped": skipped, "swept_all_folios": swept_all}

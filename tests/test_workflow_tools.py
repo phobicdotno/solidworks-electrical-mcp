@@ -12,6 +12,7 @@ Run directly:
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -193,7 +194,8 @@ def main() -> int:
                             if s.get("component_tag_path")), None)
             src_tag = src_sym["component_tag_path"] if src_sym else None
             src_bare = src_tag.split("-")[-1] if src_tag else ""
-            src_root = "".join(ch for ch in src_bare if ch.isalpha()) or "Z"
+            m = re.match(r"([A-Za-z]+)", src_bare)   # leading letters only
+            src_root = m.group(1) if m else "Z"
             tmp_tag = src_root + "9901"
             tool("delete_component", {"tag": tmp_tag,
                                       "pages": [cand["page"]]})  # crash leftover
@@ -212,6 +214,14 @@ def main() -> int:
                 before = tool("find_component", {"tag": tmp_tag})
                 check(before.get("count") == 0,
                       "clone_component dry run must not create anything")
+                lower = tool("clone_component",
+                             {"source_tag": src_tag,
+                              "new_tag": tmp_tag.lower(),
+                              "page": cand["page"]})
+                check(lower.get("ok")
+                      and lower.get("plan", {}).get("new_tag") == tmp_tag,
+                      "clone_component must normalise a lowercase tag root "
+                      f"to the project casing (got {lower.get('plan', {}).get('new_tag')!r})")
                 done = tool("clone_component", {"source_tag": src_tag,
                                                 "new_tag": tmp_tag,
                                                 "page": cand["page"],
