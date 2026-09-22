@@ -184,6 +184,63 @@ def main() -> int:
         except OSError:
             pass
 
+        # clone_component / delete_component round trip on the drawn page:
+        # clone the first symbol's component into a throwaway tag, verify the
+        # component, its parts and the copied symbol, then delete it again.
+        if drawn:
+            cand, syms = drawn
+            src_sym = next((s for s in syms["symbols"]
+                            if s.get("component_tag_path")), None)
+            src_tag = src_sym["component_tag_path"] if src_sym else None
+            src_bare = src_tag.split("-")[-1] if src_tag else ""
+            src_root = "".join(ch for ch in src_bare if ch.isalpha()) or "Z"
+            tmp_tag = src_root + "9901"
+            tool("delete_component", {"tag": tmp_tag,
+                                      "pages": [cand["page"]]})  # crash leftover
+            if src_tag:
+                wrong = tool("clone_component", {"source_tag": src_tag,
+                                                 "new_tag": "ZZ9901",
+                                                 "page": cand["page"]})
+                check(wrong.get("ok") is False and "tag root" in str(wrong.get("error")),
+                      "clone_component must refuse a different tag root")
+                plan = tool("clone_component", {"source_tag": src_tag,
+                                                "new_tag": tmp_tag,
+                                                "page": cand["page"]})
+                check(plan.get("ok") and plan.get("dry_run") is True
+                      and plan.get("plan", {}).get("symbols_to_copy"),
+                      f"clone_component dry run failed: {plan}")
+                before = tool("find_component", {"tag": tmp_tag})
+                check(before.get("count") == 0,
+                      "clone_component dry run must not create anything")
+                done = tool("clone_component", {"source_tag": src_tag,
+                                                "new_tag": tmp_tag,
+                                                "page": cand["page"],
+                                                "dry_run": False})
+                print("clone_component:", done.get("ok"),
+                      done.get("new_component", {}).get("tag_path"),
+                      "parts:", len(done.get("new_component", {}).get("parts", [])),
+                      "symbols:", done.get("symbols_placed"))
+                check(done.get("ok") and not done.get("errors"),
+                      f"clone_component failed: {done.get('errors')}")
+                new_id = done.get("new_component", {}).get("id")
+                src_parts = plan["plan"]["source"]["parts"]
+                check(len(done.get("new_component", {}).get("parts", []))
+                      == len(src_parts),
+                      "clone_component: manufacturer parts not copied")
+                after = tool("folio_symbols", {"page": cand["page"]})
+                check(any(s["component_id"] == new_id for s in after.get("symbols", [])),
+                      "clone_component: no symbol for the clone on the page")
+                dele = tool("delete_component", {"component_id": new_id,
+                                                 "pages": [cand["page"]]})
+                check(dele.get("symbols_removed"),
+                      "delete_component: expected to remove the bound symbol")
+                check(dele.get("ok"), f"delete_component failed: {dele}")
+                gone = tool("find_component", {"tag": tmp_tag})
+                check(gone.get("count") == 0, "delete_component: clone still exists")
+                after2 = tool("folio_symbols", {"page": cand["page"]})
+                check(after2.get("count") == syms["count"],
+                      "delete_component: symbol count did not return to baseline")
+
         name = info["name"]
         rn = tool("rename_project", {"new_name": name})
         print("rename_project (round-trip):", rn)

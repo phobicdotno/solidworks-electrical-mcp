@@ -101,6 +101,11 @@ def coerce_value(v: Any) -> Any:
         return v
     if isinstance(v, dict):
         return {str(k): coerce_value(x) for k, x in v.items()}
+    if hasattr(v, "isoformat"):  # datetime / pywintypes.datetime
+        try:
+            return v.isoformat()
+        except Exception:  # noqa: BLE001
+            return str(v)
     if isinstance(v, (list, tuple)):
         return [coerce_value(x) for x in v]
     try:

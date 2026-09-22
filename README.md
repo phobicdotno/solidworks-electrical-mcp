@@ -38,6 +38,8 @@ Electrical must be running with a project open.
 | `regenerate_title_blocks()` | Refresh title blocks from project data (fails 45 while drawings are open). |
 | `rename_project(new_name)` | Rename the project (drives the cover title). |
 | `close_and_reopen_folio(page? / file_id?)` | Force a page to redraw. |
+| `clone_component(source_tag, new_tag, page?, offset_x?, offset_y?, dry_run=True)` | "On sheet 10, clone K32 into K33": new component with the same description, location, class and manufacturer parts, plus the source's symbols on that page copied into the next free slot. Dry run by default. |
+| `delete_component(component_id? / tag?)` | Remove a component and its symbols (the undo for a clone). |
 | `reconnect()` | Drop cached COM state and attach again (after SOLIDWORKS restarted). |
 
 Two failure modes are handled automatically: a COM factory dispatched while

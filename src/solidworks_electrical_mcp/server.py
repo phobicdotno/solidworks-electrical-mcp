@@ -62,7 +62,9 @@ mcp = FastMCP(
         "list_books_and_folders · list_components · find_component · "
         "list_cables · folio_symbols · export_folio_pdf (then Read the PDF to "
         "SEE the page) · regenerate_title_blocks · rename_project · "
-        "close_and_reopen_folio · reconnect (drop cached COM state after "
+        "close_and_reopen_folio · clone_component (\"on sheet 10 clone K32 "
+        "into K33\"; dry_run first) · delete_component · reconnect (drop "
+        "cached COM state after "
         "SOLIDWORKS was restarted). Reach for the generic call/call_ops/"
         "array_ops tools below ONLY for something these do not cover.\n\n"
         "Tools: search_api/get_api/compare_versions (discover the API surface) "
@@ -741,6 +743,38 @@ def close_and_reopen_folio(page: str | int | None = None,
     """Close and reopen one folio so the GUI redraws it (after moving
     symbols or refreshing title-block data)."""
     return _run(wf.close_and_reopen_folio, page=page, file_id=file_id)
+
+
+@mcp.tool
+def clone_component(source_tag: str, new_tag: str,
+                    page: str | int | None = None, file_id: int | None = None,
+                    offset_x: float | None = None, offset_y: float = 0.0,
+                    dry_run: bool = True) -> dict:
+    """Clone a component into a new tag: "On sheet 10, clone K32 into K33".
+
+    Copies tag-independent data (description, location, parent, class,
+    function, manufacturer parts) to a new component tagged ``new_tag``. If a
+    page is given, every symbol of the source on that page is copied for the
+    new component, shifted by ``offset_x``/``offset_y`` (default: the next
+    free slot at the pitch of the neighbouring symbols). The new tag must
+    keep the source's tag root (MR rule: relays are always K). ``dry_run``
+    (default True) returns the plan only; call again with ``dry_run=False``
+    to write. The result carries an ``undo`` hint.
+    """
+    return _run(wf.clone_component, source_tag=source_tag, new_tag=new_tag,
+                page=page, file_id=file_id, offset_x=offset_x,
+                offset_y=offset_y, dry_run=dry_run)
+
+
+@mcp.tool
+def delete_component(component_id: int | None = None,
+                     tag: str | None = None,
+                     pages: list[str | int] | None = None) -> dict:
+    """Remove a component by id or by unambiguous tag. If symbols block the
+    remove they are deleted first: from ``pages`` when given (fast), else
+    from every folio (slow on a large project)."""
+    return _run(wf.delete_component, component_id=component_id, tag=tag,
+                pages=pages)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

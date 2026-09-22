@@ -18,6 +18,7 @@ Conventions
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable, Iterable
 
 from .com import coerce_value
@@ -47,7 +48,8 @@ SYMBOL_TYPE_NAMES = {
 
 EW_ERROR_NAMES = {
     0: "EW_NO_ERROR", 2: "EW_BAD_INPUTS", 3: "EW_FILE_NOT_FOUND",
-    8: "EW_DOES_NOT_EXIST", 13: "EW_ALREADY_INSERTED", 22: "EW_OBJECT_NOT_FOUND",
+    8: "EW_DOES_NOT_EXIST", 9: "EW_INVALID_OBJECT", 13: "EW_ALREADY_INSERTED",
+    22: "EW_OBJECT_NOT_FOUND",
     34: "EW_INVALID_INDEX", 35: "EW_CANNOT_REMOVE", 37: "EW_FOLDER_NOT_FOUND",
     39: "EW_INVALID_LICENSE", 45: "EW_PROJECT_OPENED", 56: "EW_MISSING_MANDATORY",
 }
@@ -506,3 +508,277 @@ def close_and_reopen_folio(app: Any, client: Any, page: str | int | None = None,
     rc_open = _rc(f.open())
     return {"ok": rc_open in (0, None), "folio": _folio_row(f),
             "close_rc": rc_close, "open_rc": rc_open}
+
+
+# --------------------------------------------------------------------------
+# Write-side: clone / delete a component
+
+
+def _find_one_component(app: Any, client: Any, tag: str) -> Any:
+    """The IEwProjectComponentX for an unambiguous tag / tag path."""
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectComponentManager())
+    want = tag.strip()
+    want_bare = want.lstrip("-")
+    hits = []
+    for c in _each(client, _u(mgr.getEwProjectComponentArray())):
+        t = str(_u(c.getTag()))
+        tp = str(_u(c.getTagPath()))
+        if t == want or t == want_bare or tp == want \
+                or tp.endswith("-" + want_bare):
+            hits.append(c)
+    if not hits:
+        raise LookupError(f"no component with tag {tag!r}")
+    if len(hits) > 1:
+        paths = [_u(c.getTagPath()) for c in hits]
+        raise LookupError(f"tag {tag!r} is ambiguous: {paths}; give the full "
+                          "tag path")
+    return hits[0]
+
+
+def _symbols_of(app: Any, client: Any, file_id: int, component_id: int) -> list:
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    out = []
+    for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
+        if _u(s.getObjectID()) == component_id:
+            out.append(s)
+    return out
+
+
+def _tag_root(tag: str) -> str:
+    """Letters before the number: "K32" -> "K", "N1N15" -> "N", "T58" -> "T"."""
+    m = re.match(r"([A-Za-z]+)", tag.strip().lstrip("-"))
+    return m.group(1).upper() if m else ""
+
+
+def _next_free_slot(app: Any, client: Any, file_id: int,
+                    src_symbols: list[dict]) -> float:
+    """X offset that puts the copy in the next free slot to the right.
+
+    The pitch is the spacing between symbols of the same library name on
+    the same row (footprints report width 0, so the neighbours are the only
+    reliable size). If a symbol already sits at the candidate slot, keep
+    stepping right. Falls back to the symbol width, then 10 mm.
+    """
+    ref = src_symbols[0]
+    name, x0, y0 = ref["symbol_name"], ref["x"], ref["y"]
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    row_xs: list[float] = []
+    for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
+        if _u(s.getEwSymbolName()) != name:
+            continue
+        y = _u(s.getYPosition())
+        if isinstance(y, (int, float)) and abs(y - y0) < 0.5:
+            row_xs.append(float(_u(s.getXPosition())))
+    row_xs.sort()
+    gaps = [b - a for a, b in zip(row_xs, row_xs[1:]) if b - a > 0.01]
+    if gaps:
+        pitch = min(gaps)
+    elif isinstance(ref["width"], (int, float)) and ref["width"] > 0:
+        pitch = float(ref["width"])
+    else:
+        pitch = 10.0
+    target = x0 + pitch
+    while any(abs(x - target) < pitch / 2 for x in row_xs):
+        target += pitch
+    return round(target - x0, 6)
+
+
+def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
+                    page: str | int | None = None, file_id: int | None = None,
+                    offset_x: float | None = None, offset_y: float = 0.0,
+                    dry_run: bool = True) -> dict:
+    """Clone a component (description, location, parent, class, function,
+    manufacturer parts) into ``new_tag`` and, if a page is given, copy the
+    source's symbols on that page for the new component, shifted by
+    ``offset_x``/``offset_y`` (default: one symbol width to the right, so a
+    cabinet-layout footprint lands in the next slot).
+
+    ``dry_run`` (default) returns the plan and writes nothing.
+    """
+    proj = _project(app)
+    src = _find_one_component(app, client, source_tag)
+    src_id = _u(src.getID())
+    parts = _part_map(proj, client).get(src_id, [])
+    new_bare = new_tag.strip().lstrip("-")
+    src_root = str(_u(src.getTagRoot()) or "").strip() or _tag_root(str(_u(src.getTag())))
+    new_root = _tag_root(new_bare)
+    if new_root != src_root:
+        raise ValueError(
+            f"tag root must stay {src_root!r} when cloning "
+            f"{_u(src.getTagPath())!r} (got {new_bare!r}, root {new_root!r}). "
+            "MR rule: a clone keeps its device class; relays are always "
+            "rooted K.")
+    try:
+        _find_one_component(app, client, new_bare)
+    except LookupError:
+        pass
+    else:
+        raise ValueError(f"a component tagged {new_bare!r} already exists")
+
+    src_symbols: list[dict] = []
+    folio_row = None
+    if page is not None or file_id is not None:
+        f = find_folio(app, client, page=page, file_id=file_id)
+        folio_row = _folio_row(f)
+        for s in _symbols_of(app, client, folio_row["id"], src_id):
+            src_symbols.append({
+                "symbol_id": _u(s.getID()),
+                "symbol_name": _u(s.getEwSymbolName()),
+                "symbol_type_code": _u(s.getEwSymbolType()),
+                "x": _u(s.getXPosition()), "y": _u(s.getYPosition()),
+                "rotation": _u(s.getRotationAngle()),
+                "x_scale": _u(s.getXScale()), "y_scale": _u(s.getYScale()),
+                "width": _u(s.getWidth()), "height": _u(s.getHeight()),
+            })
+        if not src_symbols:
+            raise LookupError(
+                f"{source_tag!r} has no symbol on page "
+                f"{folio_row['page']!r} ({folio_row['description']})")
+    if offset_x is None and src_symbols:
+        offset_x = _next_free_slot(app, client, folio_row["id"], src_symbols)
+    elif offset_x is None:
+        offset_x = 10.0
+
+    plan = {
+        "source": _component_row(src, {src_id: parts}),
+        "new_tag": new_bare,
+        "folio": folio_row,
+        "symbols_to_copy": [
+            {**s, "new_x": s["x"] + offset_x, "new_y": s["y"] + offset_y}
+            for s in src_symbols],
+        "offset": {"x": offset_x, "y": offset_y},
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    steps: list[dict] = []
+
+    def step(name: str, fn: Callable[[], Any]) -> Any:
+        try:
+            r = fn()
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"step": name, "error": f"{type(exc).__name__}: {exc}"})
+            return None
+        steps.append({"step": name, "rc": _rc(r), "rc_name": _rc_name(_rc(r))})
+        return r
+
+    # 1. the component: newX -> insert -> set fields -> update
+    mgr = _u(proj.getEwProjectComponentManager())
+    new = _u(mgr.newEwProjectComponent())
+    step("insert", new.insert)
+    step("setTag", lambda: new.setTag(new_bare))
+    desc = _text(src, "getDescription", LANG)
+    if desc:
+        step("setDescription", lambda: new.setDescription(LANG, desc))
+    for getter, setter in (("getLocationID", "setLocationID"),
+                           ("getParentID", "setParentID"),
+                           ("getClassID", "setClassID"),
+                           ("getClassNodeID", "setClassNodeID"),
+                           ("getFunctionID", "setFunctionID")):
+        val = _u(getattr(src, getter)())
+        if isinstance(val, int) and val > 0:
+            step(setter, lambda s_=setter, v_=val: getattr(new, s_)(v_))
+    step("update", new.update)
+    new_id = _u(new.getID())
+
+    # 2. manufacturer parts
+    for p in parts:
+        step(f"assignManufacturerPart({p['manufacturer']},{p['reference']})",
+             lambda p_=p: new.assignManufacturerPart(p_["manufacturer"],
+                                                     p_["reference"]))
+    # assignManufacturerPart commits on its own; a further update() on the
+    # component answers EW_INVALID_OBJECT (9) once several parts are bound.
+
+    # 3. symbols on the page
+    placed: list[dict] = []
+    if folio_row is not None:
+        f = find_folio(app, client, file_id=folio_row["id"])
+        for s in plan["symbols_to_copy"]:
+            sym = _u(f.newEwProjectSymbolFromSymbolType(s["symbol_type_code"]))
+            if sym is None:
+                steps.append({"step": "newEwProjectSymbolFromSymbolType",
+                              "error": "returned NULL"})
+                continue
+            step("sym.setObjectID", lambda: sym.setObjectID(new_id))
+            step("sym.setEwSymbolName",
+                 lambda: sym.setEwSymbolName(s["symbol_name"]))
+            step("sym.setXPosition", lambda: sym.setXPosition(s["new_x"]))
+            step("sym.setYPosition", lambda: sym.setYPosition(s["new_y"]))
+            if s["rotation"]:
+                step("sym.setRotationAngle",
+                     lambda: sym.setRotationAngle(s["rotation"]))
+            if s["x_scale"] and s["x_scale"] != 1:
+                step("sym.setXScale", lambda: sym.setXScale(s["x_scale"]))
+            if s["y_scale"] and s["y_scale"] != 1:
+                step("sym.setYScale", lambda: sym.setYScale(s["y_scale"]))
+            step("sym.insert", sym.insert)
+            placed.append({"symbol_id": _u(sym.getID()),
+                           "symbol_name": s["symbol_name"],
+                           "x": s["new_x"], "y": s["new_y"]})
+
+    # 4. read back
+    parts_after = _part_map(proj, client).get(new_id, [])
+    new_row = _component_row(new, {new_id: parts_after})
+    errors = [st for st in steps
+              if st.get("error") or st.get("rc") not in (0, None)]
+    return {
+        "ok": not errors and new_row["tag"] == new_bare,
+        "dry_run": False,
+        "new_component": new_row,
+        "symbols_placed": placed,
+        "plan": plan,
+        "steps": steps,
+        "errors": errors,
+        "undo": f"delete_component(component_id={new_id})",
+    }
+
+
+def delete_component(app: Any, client: Any, component_id: int | None = None,
+                     tag: str | None = None,
+                     pages: list[str | int] | None = None) -> dict:
+    """Remove a component by id or tag.
+
+    A plain remove is tried first. If SOLIDWORKS answers EW_CANNOT_REMOVE
+    (35) the component still has symbols bound to it: those are removed
+    from ``pages`` if given (fast), otherwise from every folio (a full sweep,
+    minutes on a large project), and the remove is retried.
+    """
+    proj = _project(app)
+    if component_id is not None:
+        mgr = _u(proj.getEwProjectComponentManager())
+        comp = _u(mgr.findEwProjectComponentByID(int(component_id)))
+        if comp is None:
+            raise LookupError(f"no component with id {component_id}")
+    elif tag:
+        comp = _find_one_component(app, client, tag)
+    else:
+        raise ValueError("give component_id or tag")
+    row = _component_row(comp, None)
+    cid = row["id"]
+    symbols_removed: list[dict] = []
+    rc = _rc(comp.remove())
+    if rc == 35:
+        # Symbols bound to the component block the remove. Manufacturer
+        # parts go with the component, symbols do not.
+        sym_mgr = _u(proj.getEwProjectSymbolManager())
+        if pages:
+            folios = [find_folio(app, client, page=p) for p in pages]
+        else:
+            file_mgr = _u(proj.getEwProjectFileManager())
+            folios = list(_each(client, _u(file_mgr.getEwProjectFileArray())))
+        for f in folios:
+            fid = _u(f.getID())
+            for sym in _each(client,
+                             _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
+                if _u(sym.getObjectID()) != cid:
+                    continue
+                symbols_removed.append({"file_id": fid, "page": _u(f.getTag()),
+                                        "symbol_id": _u(sym.getID()),
+                                        "rc": _rc(sym.remove())})
+        rc = _rc(comp.remove())
+    return {"ok": rc in (0, None), "removed": row, "rc": rc,
+            "rc_name": _rc_name(rc), "symbols_removed": symbols_removed,
+            "swept_all_folios": rc != 0 or (bool(symbols_removed) and not pages)}
