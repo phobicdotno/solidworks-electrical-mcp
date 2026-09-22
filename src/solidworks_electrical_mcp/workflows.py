@@ -1654,7 +1654,8 @@ def renumber_components(app: Any, client: Any, renames: list,
             while True:
                 cand = f"{r['root']}{n}"
                 n += 1
-                if cand not in taken and cand not in temps.values():
+                if (cand not in taken and cand not in temps.values()
+                        and cand not in targets):
                     break
             temps[r["old"]] = cand
 
@@ -2039,7 +2040,11 @@ def add_folio(app: Any, client: Any, description: str,
     # Read the row back AFTER the cascade: during it the new folio is parked
     # on a temporary number, and reporting that number would be a lie.
     row = _folio_row(find_folio(app, client, file_id=new_id))
-    return {"ok": row["id"] == new_id and row["folder_id"] == (
+    bad = {k: v for k, v in steps.items() if v not in (0, None)}
+    landed = (target is None or row["page_number"] == target)
+    return {"ok": not bad and landed and row["id"] == new_id,
+            "bad_steps": bad, "landed_on_requested_page": landed,
+            "_legacy_ok": row["folder_id"] == (
                 folder_id if folder_id is not None else row["folder_id"]),
             "dry_run": False, "folio": row, "steps": steps,
             "cascade": cascade, "plan": plan,
@@ -2058,6 +2063,11 @@ def delete_folio(app: Any, client: Any, file_id: int) -> dict:
         raise ValueError(
             f"page {row['page']!r} still carries {len(syms)} symbols; remove "
             "them first")
+    texts = list_texts(app, client, file_id=file_id)["texts"]
+    if texts:
+        raise ValueError(
+            f"page {row['page']!r} still carries {len(texts)} free text(s) "
+            f"({[t['text'] for t in texts][:5]}); remove them first")
     rc = _rc(f.remove())
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc)}
@@ -2244,6 +2254,14 @@ def move_symbols(app: Any, client: Any, moves: list,
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
     bx = {**GO_BOX, **(box or {})}
+    seen_ids = set()
+    for m in moves:
+        if int(m["symbol_id"]) in seen_ids:
+            raise ValueError(
+                f"symbol {m['symbol_id']} appears twice in one batch; the "
+                "second delta would be computed from the same original "
+                "position and silently win")
+        seen_ids.add(int(m["symbol_id"]))
     jobs = []
     fid = None
     for m in moves:
@@ -2277,13 +2295,31 @@ def move_symbols(app: Any, client: Any, moves: list,
             if ends:
                 j["line_moves"].append({"line": ln, "ends": ends})
 
+    def _in_box(px, py):
+        return (bx["x_min"] - _SNAP <= px <= bx["x_max"] + _SNAP
+                and bx["y_min"] - _SNAP <= py <= bx["y_max"] + _SNAP)
+
     out_of_box = []
     for j in jobs:
         for p in j["points"]:
             nx, ny = p["x"] + j["dx"], p["y"] + j["dy"]
-            if not (bx["x_min"] - _SNAP <= nx <= bx["x_max"] + _SNAP
-                    and bx["y_min"] - _SNAP <= ny <= bx["y_max"] + _SNAP):
+            if not _in_box(nx, ny):
                 out_of_box.append({"symbol_id": j["id"], "x": nx, "y": ny})
+        # The dragged wire ends have to stay in the frame too. Checking only
+        # the symbol points let a batch move push a wire off the sheet, where
+        # the same move one at a time was refused.
+        for lm in j["line_moves"]:
+            ln, ends = lm["line"], lm["ends"]
+            if "start" in ends and not _in_box(ln["x1"] + j["dx"],
+                                               ln["y1"] + j["dy"]):
+                out_of_box.append({"line_id": ln["id"], "end": "start",
+                                   "x": ln["x1"] + j["dx"],
+                                   "y": ln["y1"] + j["dy"]})
+            if "end" in ends and not _in_box(ln["x2"] + j["dx"],
+                                             ln["y2"] + j["dy"]):
+                out_of_box.append({"line_id": ln["id"], "end": "end",
+                                   "x": ln["x2"] + j["dx"],
+                                   "y": ln["y2"] + j["dy"]})
     plan = {"file_id": fid, "count": len(jobs), "box": bx,
             "moves": [{"symbol_id": j["id"], "from": [j["ox"], j["oy"]],
                        "to": [j["ox"] + j["dx"], j["oy"] + j["dy"]],
@@ -2363,7 +2399,13 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
             if not (same_row or same_col):
                 continue
             d = abs(p["x"] - q["x"]) if same_row else abs(p["y"] - q["y"])
-            if _SNAP < d < gap - _SNAP:
+            if d <= _SNAP:
+                crowded.append({"gap": 0.0, "axis": "coincident",
+                                "a": {"tag": p["tag"], "symbol_id": p["symbol_id"],
+                                      "x": p["x"], "y": p["y"]},
+                                "b": {"tag": q["tag"], "symbol_id": q["symbol_id"],
+                                      "x": q["x"], "y": q["y"]}})
+            elif d < gap - _SNAP:
                 crowded.append({"gap": round(d, 3), "axis":
                                 "row" if same_row else "column",
                                 "a": {"tag": p["tag"], "symbol_id": p["symbol_id"],
@@ -2402,6 +2444,10 @@ def add_location(app: Any, client: Any, tag: str, description: str,
         sibs.append({"id": _u(l.getID()), "tag": str(_u(l.getTag())),
                      "tag_path": _u(l.getTagPath()),
                      "description": _text(l, "getDescription", LANG)})
+    clash = [x for x in sibs if str(x["tag"]) == str(tag)]
+    if clash:
+        raise ValueError(
+            f"a location tagged {tag!r} already exists: {clash}")
     plan = {"tag": tag, "description": description,
             "parent_location_id": parent_location_id, "siblings": sibs}
     if dry_run:
@@ -2413,7 +2459,9 @@ def add_location(app: Any, client: Any, tag: str, description: str,
     if parent_location_id is not None:
         st["setParentID"] = _rc(new.setParentID(int(parent_location_id)))
     st["update"] = _rc(new.update())
-    return {"ok": True, "dry_run": False,
+    bad = {k: v for k, v in st.items() if v not in (0, None)}
+    return {"ok": not bad and str(_u(new.getTag())) == str(tag),
+            "bad_steps": bad, "dry_run": False,
             "location": {"id": _u(new.getID()), "tag": _u(new.getTag()),
                          "tag_path": _u(new.getTagPath()),
                          "description": _text(new, "getDescription", LANG)},
@@ -2442,7 +2490,9 @@ def attach_manufacturer_part(app: Any, client: Any, tag: str,
     mgr = _u(proj.getEwProjectManufacturerPartManager())
     existing = []
     for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
-        if _u(p.getObjectID()) == cid and str(_u(p.getReference())) == reference:
+        if (_u(p.getObjectID()) == cid
+                and str(_u(p.getReference())) == reference
+                and str(_u(p.getManufacturer())) == manufacturer):
             existing.append(_u(p.getID()))
     plan = {"component": _component_row(comp, None),
             "manufacturer": manufacturer, "reference": reference,
@@ -2497,7 +2547,10 @@ def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
     plan = {"component": _component_row(comp, None), "folio": row,
             "symbol_name": symbol_name, "symbol_type": symbol_type,
             "x": x, "y": y, "rotation": rotation,
-            "x_scale": x_scale, "y_scale": y_scale}
+            "x_scale": x_scale, "y_scale": y_scale,
+            "note": ("a dry run can only check the origin: a symbol's "
+                     "connection points exist only after the insert, so the "
+                     "live call may still refuse this position")}
     if dry_run:
         return {"ok": True, "dry_run": True, "plan": plan}
 
@@ -2536,14 +2589,19 @@ def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
                      and bx["y_min"] - _SNAP <= p["y"] <= bx["y_max"] + _SNAP)]
     if stray:
         sid = _u(sym.getID())
-        steps["remove (points outside the box)"] = _rc(sym.remove())
+        rc_rm = _rc(sym.remove())
+        steps["remove (points outside the box)"] = rc_rm
         if was_open:
             steps["folio.open"] = _rc(f.open())
         return {"ok": False, "dry_run": False, "plan": plan, "steps": steps,
                 "points": pts, "outside_box": stray,
+                "removed_cleanly": rc_rm in (0, None),
                 "error": (f"placed at ({x}, {y}) the symbol puts "
                           f"{len(stray)} connection point(s) outside the "
-                          f"drawable box {bx}; symbol {sid} was removed")}
+                          f"drawable box {bx}; symbol {sid} "
+                          + ("was removed" if rc_rm in (0, None) else
+                             f"could NOT be removed (rc {rc_rm}) and is still "
+                             "on the sheet"))}
     if was_open:
         steps["folio.open"] = _rc(f.open())
     bad = {k: v for k, v in steps.items() if v not in (0, None)}
@@ -2565,11 +2623,26 @@ def remove_symbol(app: Any, client: Any, symbol_id: int) -> dict:
     steps = {}
     if was_open:
         steps["folio.close"] = _rc(f.close())
+    # Lines drawn to this symbol do not disappear with it, so the sheet would
+    # show wires running into nothing. Report them; the caller decides.
+    pts = _symbol_points(sym)
+    dangling = []
+    for ln in _folio_lines(app, client, fid):
+        for tag, lx, ly in (("start", ln["x1"], ln["y1"]),
+                            ("end", ln["x2"], ln["y2"])):
+            if any(abs(lx - p["x"]) < 0.01 and abs(ly - p["y"]) < 0.01
+                   for p in pts):
+                dangling.append({"line_id": ln["id"], "end": tag,
+                                 "x": lx, "y": ly})
     steps["remove"] = _rc(sym.remove())
     if was_open:
         steps["folio.open"] = _rc(f.open())
     return {"ok": steps["remove"] in (0, None), "symbol_id": symbol_id,
-            "file_id": fid, "steps": steps}
+            "file_id": fid, "steps": steps,
+            "dangling_line_ends": dangling,
+            "note": (None if not dangling else
+                     f"{len(dangling)} wire end(s) now hang on nothing where "
+                     "this symbol was; remove or redraw them")}
 
 
 def add_text(app: Any, client: Any, text: str, x: float, y: float,

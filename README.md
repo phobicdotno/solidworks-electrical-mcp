@@ -42,6 +42,17 @@ Electrical must be running with a project open.
 | `add_component(tag, manufacturer, reference, page?, after_tag?, shift_following?, x?, y?, dry_run=True)` | Build a unit with no source to copy. The symbol comes from the manufacturer part itself; scale and rotation from a neighbour, because a cabinet footprint is drawn scaled to real millimetres. `shift_following` inserts into a rail, pushing everything right of `after_tag` along by one device pitch. |
 | `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device. Symbols, cross-references and the BOM are linked by id and follow it; the mark spelled out as literal text does not, so every such place is listed for a human to judge. |
 | `delete_component(component_id? / tag?, pages?, close_gap?)` | Remove a component and its symbols (the undo for a clone or an add). `close_gap` pulls the rail back over the hole. |
+| `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device; reports what follows the rename and what does not. |
+| `renumber_components(renames, dry_run=True)` | Retag a whole run in one pass, collision-safe, with temp marks when the old and new sets overlap. |
+| `audit_tag_roots(tag_contains?, fix?)` | Find and repair components whose stored tag root/number disagree with their mark. |
+| `add_folder` / `rename_folder` / `delete_folder` | The document tree. |
+| `add_folio(description, file_type, folder_id?, insert_before_page?, dry_run=True)` / `delete_folio` | Pages; `insert_before_page` cascades the following page numbers. |
+| `add_location(tag, description, dry_run=True)` | A location. |
+| `attach_manufacturer_part(tag, manufacturer, reference, ...)` | Give a component a part the library does not carry. |
+| `place_symbol(tag, symbol_name, x, y, page, ...)` / `remove_symbol(symbol_id)` | Draw an existing component on a page, or undraw it. |
+| `move_symbol` / `move_symbols(moves)` | Move a symbol WITH the wire ends drawn to it. Prefer the batch: moving one at a time walks every line in the project per symbol. |
+| `add_text` / `list_texts` / `remove_text` | Free text on a page. Content is set before insert, unlike every other object. |
+| `check_drawing_rules(page, min_spacing?, box?)` | Crowded or coincident connection points, and anything outside the drawable box. |
 | `reconnect()` | Drop cached COM state and attach again (after SOLIDWORKS restarted). |
 
 Two failure modes are handled automatically: a COM factory dispatched while

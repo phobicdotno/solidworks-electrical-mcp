@@ -73,7 +73,15 @@ mcp = FastMCP(
         "close_and_reopen_folio · add_component (build one from scratch) "
         "· rename_component (retag; lists what follows and what does not) "
         "· renumber_components (retag a whole run, collision-safe) "
-        "· clone_component (\"on sheet 10 clone K32 "
+        "· audit_tag_roots (mark vs stored root/number) "
+        "· add_folder/rename_folder/delete_folder and add_folio/delete_folio "
+        "(the document tree and its pages; insert_before_page cascades "
+        "the numbers) · add_location · attach_manufacturer_part (a part "
+        "the library does not carry) · place_symbol/remove_symbol/"
+        "move_symbol/move_symbols (draw an existing component, and move "
+        "one WITH its wires; prefer the batch) · add_text/list_texts/"
+        "remove_text · check_drawing_rules (crowding and the drawable "
+        "box) · clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
         "cached COM state after "
         "SOLIDWORKS was restarted). Reach for the generic call/call_ops/"
@@ -980,8 +988,11 @@ def check_drawing_rules(page: str | int | None = None,
     """Report crowded connection points and anything outside the drawable box.
 
     Connection points of different symbols sharing a row or column and closer
-    than ``min_spacing`` (default 30 mm, the house convention measured on
-    this project), plus any point or line end outside the box. Reports only.
+    than ``min_spacing``, plus any point or line end outside the box, plus
+    any pair of points that coincide exactly. The default is one grid step,
+    10 mm, which is the dot-to-dot rule. That is NOT the relay spacing: a
+    relay label is three grid pitches wide, so relays need 30 mm between
+    origins, which this check does not model. Reports only.
     """
     return _run(wf.check_drawing_rules, page=page, file_id=file_id,
                 min_spacing=min_spacing, box=box)
