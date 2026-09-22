@@ -37,15 +37,25 @@ from fastmcp import FastMCP
 
 from . import catalog as catalog_mod
 from . import com as com_mod
+from . import workflows as wf
 
 mcp = FastMCP(
     name="solidworks-electrical-mcp",
     instructions=(
         "Drives SOLIDWORKS Electrical via COM (pywin32) and indexes its API "
         "via doc catalogues sourced from help.solidworks.com. Multiple major "
-        "releases are supported simultaneously — list_versions() reports "
+        "releases are supported simultaneously - list_versions() reports "
         "what is shipped and what is installed; every other tool that needs "
         "a catalog accepts an optional version= parameter.\n\n"
+        "START HERE - task-level tools (validated live, no COM knowledge "
+        "needed; SOLIDWORKS Electrical must be running with a project open): "
+        "project_info · list_folios · find_folio · list_locations · "
+        "list_books_and_folders · list_components · find_component · "
+        "list_cables · folio_symbols · export_folio_pdf (then Read the PDF to "
+        "SEE the page) · regenerate_title_blocks · rename_project · "
+        "close_and_reopen_folio · reconnect (drop cached COM state after "
+        "SOLIDWORKS was restarted). Reach for the generic call/call_ops/"
+        "array_ops tools below ONLY for something these do not cover.\n\n"
         "Tools: search_api/get_api/compare_versions (discover the API surface) "
         "· get_enum (enum integer values — NOT in the catalog, read from the "
         "live typelib; needed because call/call_ops take plain ints for enum "
@@ -577,6 +587,150 @@ def typelib_members(interface: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# Task-level tools. Each one is a validated recipe assembled from the COM calls
+# above; they need SOLIDWORKS Electrical running with a project open.
+
+
+def _run(fn, *args, **kwargs) -> dict:
+    try:
+        out = com_mod.app().run_workflow(fn, *args, **kwargs)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if isinstance(out, dict):
+        out.setdefault("ok", True)
+        return out
+    return {"ok": True, "value": out}
+
+
+@mcp.tool
+def reconnect() -> dict:
+    """Drop every cached COM object and attach again.
+
+    Use after SOLIDWORKS Electrical was closed, restarted, or started after
+    this server, if a tool reports a COM error or a licence error that a
+    fresh process does not. The next tool call re-attaches automatically.
+    """
+    com_mod.app().disconnect()
+    return connect()
+
+
+@mcp.tool
+def project_info() -> dict:
+    """Name, id, customer, folder path and object counts of the open project."""
+    return _run(wf.project_info)
+
+
+@mcp.tool
+def list_folios(book_id: int | None = None, folder_id: int | None = None,
+                file_type: str | None = None,
+                description_contains: str | None = None) -> dict:
+    """List the project's pages (folios) in document-tree order.
+
+    Each row: id, page (the printed page mark), page_number, description,
+    file_type (cover_page / mixed_scheme / line_diagram / 2d_cabinet_layout /
+    terminal / bom ...), position, book_id, folder_id, location_id, is_open.
+    Filter by book, folder, file_type name, or a substring of the description.
+    """
+    return _run(wf.list_folios, book_id=book_id, folder_id=folder_id,
+                file_type=file_type, description_contains=description_contains)
+
+
+@mcp.tool
+def find_folio(page: str | int | None = None,
+               file_id: int | None = None) -> dict:
+    """Resolve one folio by page mark (e.g. "61" or "07") or by file id."""
+    def _go(app, client):
+        return wf._folio_row(wf.find_folio(app, client, page=page,
+                                           file_id=file_id))
+    return _run(_go)
+
+
+@mcp.tool
+def list_locations() -> dict:
+    """All locations (+L1, +L2 ...) with id, tag, tag path and description."""
+    return _run(wf.list_locations)
+
+
+@mcp.tool
+def list_books_and_folders() -> dict:
+    """Books and folders of the document tree (ids, tags, descriptions)."""
+    return _run(wf.list_books_and_folders)
+
+
+@mcp.tool
+def list_components(tag_contains: str | None = None,
+                    location_id: int | None = None,
+                    parent_id: int | None = None, with_parts: bool = True,
+                    limit: int = 200) -> dict:
+    """List components (devices) with tag, tag path, description, parent,
+    location and their assigned manufacturer parts.
+
+    Filter by a substring of the tag/tag path (e.g. "N1N" for the WAGO
+    modules, "K" for relays), by location id, or by parent component id
+    (children of a coupler). ``limit`` caps the rows returned.
+    """
+    return _run(wf.list_components, tag_contains=tag_contains,
+                location_id=location_id, parent_id=parent_id,
+                with_parts=with_parts, limit=limit)
+
+
+@mcp.tool
+def find_component(tag: str) -> dict:
+    """Find components by exact tag ("A1", "-A1") or full tag path
+    ("=F1+L1+L4+L2-A1"), with their manufacturer parts."""
+    return _run(wf.find_component, tag=tag)
+
+
+@mcp.tool
+def list_cables(limit: int = 500) -> dict:
+    """All cables (W1 ...) with reference, manufacturer, cores, length and
+    upstream/downstream location ids."""
+    return _run(wf.list_cables, limit=limit)
+
+
+@mcp.tool
+def folio_symbols(page: str | int | None = None,
+                  file_id: int | None = None) -> dict:
+    """What is drawn on one page: every symbol with its library name, type
+    (component / blackbox / connection / link ...), linked component tag path,
+    position and rotation. Give the page mark or the file id."""
+    return _run(wf.folio_symbols, page=page, file_id=file_id)
+
+
+@mcp.tool
+def export_folio_pdf(output_path: str, pages: list[str | int] | None = None,
+                     file_ids: list[int] | None = None,
+                     all_pages: bool = False) -> dict:
+    """Export selected pages (by page mark or file id), or the whole project,
+    to one PDF at ``output_path``. The folder is created if missing. Read the
+    resulting PDF to see the drawing and verify a change visually."""
+    return _run(wf.export_folio_pdf, output_path=output_path, pages=pages,
+                file_ids=file_ids, all_pages=all_pages)
+
+
+@mcp.tool
+def regenerate_title_blocks() -> dict:
+    """Refresh every title block from project data (after renaming the
+    project, renumbering pages, etc.). Fails with EW_PROJECT_OPENED (45) while
+    drawings are open in the GUI; the result lists the open folios."""
+    return _run(wf.regenerate_title_blocks)
+
+
+@mcp.tool
+def rename_project(new_name: str) -> dict:
+    """Rename the open project (drives the cover-sheet title)."""
+    return _run(wf.rename_project, new_name=new_name)
+
+
+@mcp.tool
+def close_and_reopen_folio(page: str | int | None = None,
+                           file_id: int | None = None) -> dict:
+    """Close and reopen one folio so the GUI redraws it (after moving
+    symbols or refreshing title-block data)."""
+    return _run(wf.close_and_reopen_folio, page=page, file_id=file_id)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

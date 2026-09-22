@@ -99,6 +99,8 @@ def coerce_value(v: Any) -> Any:
     """
     if v is None or isinstance(v, (str, int, float, bool)):
         return v
+    if isinstance(v, dict):
+        return {str(k): coerce_value(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
         return [coerce_value(x) for x in v]
     try:
@@ -255,9 +257,30 @@ class ElectricalApp:
             ) from e
         return self._factory
 
+    def _app_alive_locked(self) -> bool:
+        """Cheap liveness probe of the cached IEwApplicationX.
+
+        If SOLIDWORKS Electrical was closed (and maybe reopened) after we
+        attached, the cached pointer is dead and every call on it raises a
+        COM error. Detect that here so the attach can be redone instead of
+        failing for the rest of the process."""
+        if self._app is None:
+            return False
+        try:
+            self._app.getApplicationVersion()
+            return True
+        except Exception:  # noqa: BLE001 - any COM failure means dead
+            return False
+
+    def _reset_com_locked(self) -> None:
+        self._factory = self._app = self._api = None
+
     def _connect_application_locked(self, license_key: str | None) -> Any:
         if self._app is not None:
-            return self._app
+            if self._app_alive_locked():
+                return self._app
+            # Dead pointer (program closed since we attached): start over.
+            self._reset_com_locked()
         key = (license_key or os.environ.get(LICENCE_ENV_VAR)
                or DEFAULT_LICENCE_KEY)
         app, err = self._get_application_locked(key)
@@ -267,7 +290,7 @@ class ElectricalApp:
             # rest of its life, even after the program starts. Drop the cached
             # factory (and anything derived from it) and retry once with a
             # fresh dispatch before blaming the licence code.
-            self._factory = self._api = None
+            self._reset_com_locked()
             app, err = self._get_application_locked(key)
         if app is None:
             name = _EW_ERROR_NAMES.get(err, f"EwErrorCode {err}")
@@ -289,7 +312,10 @@ class ElectricalApp:
         Returns ``(app_or_None, err_or_None)``.
         """
         factory = self._factory_locked()
-        result = factory.getEwApplication(key)
+        try:
+            result = factory.getEwApplication(key)
+        except Exception:  # noqa: BLE001 - a dead factory raises; treat as NULL
+            return None, None
         if isinstance(result, tuple):
             return result[0], result[-1]
         return result, None
@@ -297,13 +323,25 @@ class ElectricalApp:
     def _get_api_locked(self) -> Any:
         if self._api is not None:
             return self._api
-        factory = self._factory_locked()
-        result = factory.getEwAPI()
-        if isinstance(result, tuple):
-            self._api = result[0]
-        else:
-            self._api = result
+        api = self._fetch_api_locked()
+        if api is None:
+            # Same stale-factory failure mode as the application attach.
+            self._reset_com_locked()
+            api = self._fetch_api_locked()
+        if api is None:
+            raise RuntimeError(
+                "getEwAPI returned NULL twice; is SOLIDWORKS Electrical "
+                "installed and registered?")
+        self._api = api
         return self._api
+
+    def _fetch_api_locked(self) -> Any:
+        factory = self._factory_locked()
+        try:
+            result = factory.getEwAPI()
+        except Exception:  # noqa: BLE001
+            return None
+        return result[0] if isinstance(result, tuple) else result
 
     def _root_target(self, root: str) -> Any:
         if root == "application":
@@ -614,9 +652,8 @@ class ElectricalApp:
         return self._worker.submit(self._get_api_locked)
 
     def disconnect(self) -> None:
-        def _reset() -> None:
-            self._factory = self._app = self._api = None
-        self._worker.submit(_reset)
+        """Drop every cached COM object; the next call re-attaches."""
+        self._worker.submit(self._reset_com_locked)
 
     def call(self, path: str, args: list[Any] | None = None,
              root: str = "application") -> Any:
@@ -690,6 +727,16 @@ class ElectricalApp:
         typelib so ``call``/``call_ops`` integer arguments are knowable.
         """
         return self._worker.submit(lambda: self._list_enums_locked(name))
+
+    def run_workflow(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run ``fn(app_root, pywin32_client, *args, **kwargs)`` on the COM
+        worker thread against the live ``IEwApplicationX`` and return its
+        (already JSON-safe) result. Used by the task-level tools in
+        ``workflows.py`` so they never touch COM from a tool thread."""
+        def _go() -> Any:
+            root = self._connect_application_locked(None)
+            return coerce_value(fn(root, _require_pywin32(), *args, **kwargs))
+        return self._worker.submit(_go)
 
     def typelib_members(self, interface: str) -> dict:
         """List every member of an interface from the live type library.

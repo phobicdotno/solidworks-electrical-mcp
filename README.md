@@ -16,6 +16,35 @@ catalogue ships for both 2025 and 2026 and is selected automatically based
 on the installed factory. Requires SOLIDWORKS Electrical to be installed
 locally.
 
+## Task-level tools (start here)
+
+These do the things a user actually asks for, with no COM knowledge needed.
+Each one is a validated recipe over the generic bridge below, and each is
+covered by `tests/test_workflow_tools.py` against a live project. SOLIDWORKS
+Electrical must be running with a project open.
+
+| Tool | Purpose |
+|---|---|
+| `project_info()` | Name, id, customer, folder path, object counts of the open project. |
+| `list_folios(book_id?, folder_id?, file_type?, description_contains?)` | Pages in tree order: id, page mark, description, type, book/folder/location. |
+| `find_folio(page? / file_id?)` | One page by printed mark (`"61"`) or file id. |
+| `list_locations()` | Locations with tag, tag path, description. |
+| `list_books_and_folders()` | The document tree containers. |
+| `list_components(tag_contains?, location_id?, parent_id?, with_parts?, limit?)` | Devices with tag path, description, parent, location and manufacturer parts. |
+| `find_component(tag)` | Exact match on tag (`"A1"`) or full tag path (`"=F1+L1+L4+L2-A1"`). |
+| `list_cables(limit?)` | Cables with reference, manufacturer, cores, length, end locations. |
+| `folio_symbols(page? / file_id?)` | What is drawn on a page: symbol name, type, linked component, position. |
+| `export_folio_pdf(output_path, pages? / file_ids? / all_pages?)` | Export pages to one PDF (folder auto-created). Read the PDF to see the drawing. |
+| `regenerate_title_blocks()` | Refresh title blocks from project data (fails 45 while drawings are open). |
+| `rename_project(new_name)` | Rename the project (drives the cover title). |
+| `close_and_reopen_folio(page? / file_id?)` | Force a page to redraw. |
+| `reconnect()` | Drop cached COM state and attach again (after SOLIDWORKS restarted). |
+
+Two failure modes are handled automatically: a COM factory dispatched while
+SOLIDWORKS Electrical was not yet running answers NULL forever (it used to
+surface as a bogus `EW_INVALID_LICENSE`), and an application pointer cached
+before the program was closed is dead. Both are detected and re-attached.
+
 ## How it works
 
 The Doxygen-generated SW Electrical help is the **master** for what is
