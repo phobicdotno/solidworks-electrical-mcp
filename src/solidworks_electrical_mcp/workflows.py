@@ -2552,3 +2552,98 @@ def remove_symbol(app: Any, client: Any, symbol_id: int) -> dict:
         steps["folio.open"] = _rc(f.open())
     return {"ok": steps["remove"] in (0, None), "symbol_id": symbol_id,
             "file_id": fid, "steps": steps}
+
+
+def add_text(app: Any, client: Any, text: str, x: float, y: float,
+             page: str | int | None = None, file_id: int | None = None,
+             rotation: float = 0.0, box: dict | None = None,
+             dry_run: bool = True) -> dict:
+    """Put a free text on a page (a circuit number, a note, a wire spec).
+
+    Text carries no connection points, so it is not part of any net; it is
+    annotation. It still has to sit inside the drawable box.
+    """
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+    bx = {**GO_BOX, **(box or {})}
+    if not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
+            and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP):
+        raise ValueError(f"({x}, {y}) is outside the drawable box {bx}")
+    plan = {"folio": row, "text": text, "x": x, "y": y, "rotation": rotation}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+    was_open = row["is_open"]
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "dry_run": False, "plan": plan,
+                    "steps": steps, "error": "could not close the folio"}
+    t = _u(f.newEwProjectMultilingualText())
+    if t is None:
+        if was_open:
+            f.open()
+        return {"ok": False, "dry_run": False, "plan": plan,
+                "error": "newEwProjectMultilingualText returned NULL"}
+    # Text is the exception to this project's usual newX -> insert -> set
+    # order: inserting an EMPTY text answers EW_BAD_INPUTS (2) and leaves the
+    # object at id -1, after which update answers EW_INVALID_OBJECT (9). The
+    # content and position have to be set BEFORE the insert.
+    steps["setText"] = _rc(t.setText(LANG, text))
+    steps["setXPosition"] = _rc(t.setXPosition(float(x)))
+    steps["setYPosition"] = _rc(t.setYPosition(float(y)))
+    if rotation:
+        steps["setRotationAngle"] = _rc(t.setRotationAngle(float(rotation)))
+    steps["insert"] = _rc(t.insert())
+    steps["update"] = _rc(t.update())
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    bad = {k: v for k, v in steps.items() if v not in (0, None)}
+    tid = _u(t.getID())
+    return {"ok": not bad and isinstance(tid, int) and tid > 0,
+            "dry_run": False, "text_id": tid,
+            "read_back": _u(t.getText(LANG)), "steps": steps, "bad_steps": bad}
+
+
+def list_texts(app: Any, client: Any, page: str | int | None = None,
+               file_id: int | None = None) -> dict:
+    """Every free text on a page, with id, content and position."""
+    f = find_folio(app, client, page=page, file_id=file_id)
+    fid = _u(f.getID())
+    proj = _project(app)
+    rows = []
+    # There is no per-folio text array, so the project's texts are filtered
+    # by the file id each one reports.
+    try:
+        mgr = _u(proj.getEwProjectMultilingualTextManager())
+        arr = _u(mgr.getEwProjectMultilingualTextArray())
+    except Exception:
+        arr = None
+    if arr is not None:
+        for t in _each(client, arr):
+            if _u(t.getFileID()) != fid:
+                continue
+            rows.append({"id": _u(t.getID()), "text": _u(t.getText(LANG)),
+                         "x": _u(t.getXPosition()), "y": _u(t.getYPosition())})
+    return {"folio": _folio_row(f), "count": len(rows), "texts": rows}
+
+
+def remove_text(app: Any, client: Any, text_id: int) -> dict:
+    """Delete one free text by id."""
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectMultilingualTextManager())
+    for t in _each(client, _u(mgr.getEwProjectMultilingualTextArray())):
+        if _u(t.getID()) != int(text_id):
+            continue
+        fid = _u(t.getFileID())
+        f = find_folio(app, client, file_id=fid)
+        was_open = bool(_u(f.isOpen()))
+        steps = {}
+        if was_open:
+            steps["folio.close"] = _rc(f.close())
+        steps["remove"] = _rc(t.remove())
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+        return {"ok": steps["remove"] in (0, None), "text_id": text_id,
+                "file_id": fid, "steps": steps}
+    raise LookupError(f"no text with id {text_id}")

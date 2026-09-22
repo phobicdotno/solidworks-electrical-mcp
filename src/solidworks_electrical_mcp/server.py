@@ -41,6 +41,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
     add_location, attach_manufacturer_part,
     place_symbol, remove_symbol, move_symbols,
+    add_text, list_texts, remove_text,
     delete_component.
 """
 
@@ -1053,6 +1054,33 @@ def move_symbols(moves: list, box: dict | None = None,
     ``moves`` is a list of {"symbol_id", "dx", "dy"}.
     """
     return _run(wf.move_symbols, moves=moves, box=box, dry_run=dry_run)
+
+
+@mcp.tool
+def add_text(text: str, x: float, y: float, page: str | int | None = None,
+             file_id: int | None = None, rotation: float = 0.0,
+             box: dict | None = None, dry_run: bool = True) -> dict:
+    """Put a free text on a page: a circuit number, a wire spec, a note.
+
+    Text is the exception to this project's usual create order. Inserting an
+    EMPTY text answers EW_BAD_INPUTS (2) and leaves it at id -1, so the
+    content and position are set BEFORE the insert, not after.
+    """
+    return _run(wf.add_text, text=text, x=x, y=y, page=page, file_id=file_id,
+                rotation=rotation, box=box, dry_run=dry_run)
+
+
+@mcp.tool
+def list_texts(page: str | int | None = None,
+               file_id: int | None = None) -> dict:
+    """Every free text on a page, with id, content and position."""
+    return _run(wf.list_texts, page=page, file_id=file_id)
+
+
+@mcp.tool
+def remove_text(text_id: int) -> dict:
+    """Delete one free text by id."""
+    return _run(wf.remove_text, text_id=text_id)
 
 
 def _isolate_stdout_from_native_pollution() -> None:
