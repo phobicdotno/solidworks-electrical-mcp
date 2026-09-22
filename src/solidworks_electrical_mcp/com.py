@@ -260,16 +260,16 @@ class ElectricalApp:
             return self._app
         key = (license_key or os.environ.get(LICENCE_ENV_VAR)
                or DEFAULT_LICENCE_KEY)
-        factory = self._factory_locked()
-        # IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err).
-        # Late-bound, the out-param is omitted by the caller and returned as the
-        # second tuple element alongside the IEwApplicationX return value.
-        result = factory.getEwApplication(key)
-        if isinstance(result, tuple):
-            self._app, err = result[0], result[-1]
-        else:
-            self._app, err = result, None
-        if self._app is None:
+        app, err = self._get_application_locked(key)
+        if app is None:
+            # A factory dispatched while SOLIDWORKS Electrical was not running
+            # keeps answering NULL (reported as EW_INVALID_LICENSE) for the
+            # rest of its life, even after the program starts. Drop the cached
+            # factory (and anything derived from it) and retry once with a
+            # fresh dispatch before blaming the licence code.
+            self._factory = self._api = None
+            app, err = self._get_application_locked(key)
+        if app is None:
             name = _EW_ERROR_NAMES.get(err, f"EwErrorCode {err}")
             raise SolidworksElectricalLicenceError(
                 f"getEwApplication returned NULL ({name}). The licence code "
@@ -277,7 +277,22 @@ class ElectricalApp:
                 f"${LICENCE_ENV_VAR}; the bundled default may be outdated, or "
                 "SOLIDWORKS Electrical may not be running."
             )
+        self._app = app
         return self._app
+
+    def _get_application_locked(self, key: str) -> tuple[Any, Any]:
+        """One getEwApplication attempt via the current factory.
+
+        IInteropFactoryX::getEwApplication(BSTR licenceKey, EwErrorCode* err).
+        Late-bound, the out-param is omitted by the caller and returned as the
+        second tuple element alongside the IEwApplicationX return value.
+        Returns ``(app_or_None, err_or_None)``.
+        """
+        factory = self._factory_locked()
+        result = factory.getEwApplication(key)
+        if isinstance(result, tuple):
+            return result[0], result[-1]
+        return result, None
 
     def _get_api_locked(self) -> Any:
         if self._api is not None:
