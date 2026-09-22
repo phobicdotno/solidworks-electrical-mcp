@@ -2121,11 +2121,26 @@ def _symbol_points(s: Any) -> list:
 
 
 def _folio_lines(app: Any, client: Any, file_id: int) -> list:
+    """The lines drawn on one folio.
+
+    getEwProjectLineArrayFromFileID asks SOLIDWORKS for exactly this folio's
+    lines. Walking the whole project's line array and filtering on getFileID
+    costs a COM round trip per line in the PROJECT, which made moving a rail
+    of ten symbols slow enough to abandon. The full scan stays as a fallback
+    in case the per-file call is missing on some release.
+    """
     proj = _project(app)
     lmgr = _u(proj.getEwProjectLineManager())
+    arr = None
+    try:
+        arr = _u(lmgr.getEwProjectLineArrayFromFileID(int(file_id)))
+        scoped = True
+    except Exception:  # noqa: BLE001
+        arr = _u(lmgr.getEwProjectLineArray())
+        scoped = False
     out = []
-    for ln in _each(client, _u(lmgr.getEwProjectLineArray())):
-        if _u(ln.getFileID()) != file_id:
+    for ln in _each(client, arr):
+        if not scoped and _u(ln.getFileID()) != file_id:
             continue
         out.append({"obj": ln, "id": _u(ln.getID()),
                     "x1": float(_u(ln.getStartPointXPosition())),
@@ -2705,16 +2720,22 @@ def list_texts(app: Any, client: Any, page: str | int | None = None,
     fid = _u(f.getID())
     proj = _project(app)
     rows = []
-    # There is no per-folio text array, so the project's texts are filtered
-    # by the file id each one reports.
+    # Ask for this folio's texts rather than filtering the project's, the
+    # same reason as the lines: the scan costs a round trip per text in the
+    # whole project.
+    mgr = _u(proj.getEwProjectMultilingualTextManager())
+    arr, scoped = None, True
     try:
-        mgr = _u(proj.getEwProjectMultilingualTextManager())
-        arr = _u(mgr.getEwProjectMultilingualTextArray())
-    except Exception:
-        arr = None
+        arr = _u(mgr.getEwProjectMultilingualTextByFileIDArray(int(fid)))
+    except Exception:  # noqa: BLE001
+        scoped = False
+        try:
+            arr = _u(mgr.getEwProjectMultilingualTextArray())
+        except Exception:  # noqa: BLE001
+            arr = None
     if arr is not None:
         for t in _each(client, arr):
-            if _u(t.getFileID()) != fid:
+            if not scoped and _u(t.getFileID()) != fid:
                 continue
             rows.append({"id": _u(t.getID()), "text": _u(t.getText(LANG)),
                          "x": _u(t.getXPosition()), "y": _u(t.getYPosition())})
