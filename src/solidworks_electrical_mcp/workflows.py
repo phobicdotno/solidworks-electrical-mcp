@@ -2526,11 +2526,29 @@ def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
     if y_scale is not None:
         steps["setYScale"] = _rc(sym.setYScale(float(y_scale)))
     steps["insert"] = _rc(sym.insert())
+    # A symbol's connection points are only knowable after the insert: the
+    # origin can sit inside the box while a terminal hangs outside it, which
+    # is how a coil placed at y=88 put its A2 at y=78. Check the real points
+    # and take the symbol back out rather than leave a bad one on the sheet.
+    pts = _symbol_points(sym)
+    stray = [p for p in pts
+             if not (bx["x_min"] - _SNAP <= p["x"] <= bx["x_max"] + _SNAP
+                     and bx["y_min"] - _SNAP <= p["y"] <= bx["y_max"] + _SNAP)]
+    if stray:
+        sid = _u(sym.getID())
+        steps["remove (points outside the box)"] = _rc(sym.remove())
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+        return {"ok": False, "dry_run": False, "plan": plan, "steps": steps,
+                "points": pts, "outside_box": stray,
+                "error": (f"placed at ({x}, {y}) the symbol puts "
+                          f"{len(stray)} connection point(s) outside the "
+                          f"drawable box {bx}; symbol {sid} was removed")}
     if was_open:
         steps["folio.open"] = _rc(f.open())
     bad = {k: v for k, v in steps.items() if v not in (0, None)}
     return {"ok": not bad, "dry_run": False, "symbol_id": _u(sym.getID()),
-            "plan": plan, "steps": steps, "bad_steps": bad,
+            "plan": plan, "points": pts, "steps": steps, "bad_steps": bad,
             "undo": f"remove symbol {_u(sym.getID())}"}
 
 
