@@ -39,7 +39,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     renumber_components, audit_tag_roots,
     add_folder, rename_folder, delete_folder,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
-    add_location, attach_manufacturer_part,
+    add_location, delete_location, attach_manufacturer_part,
     place_symbol, remove_symbol, move_symbols,
     add_text, list_texts, remove_text,
     delete_component.
@@ -1092,6 +1092,13 @@ def list_texts(page: str | int | None = None,
 def remove_text(text_id: int) -> dict:
     """Delete one free text by id."""
     return _run(wf.remove_text, text_id=text_id)
+
+
+@mcp.tool
+def delete_location(location_id: int) -> dict:
+    """Remove a location nothing references. Refuses while a component, a
+    folio or a cable still points at it."""
+    return _run(wf.delete_location, location_id=location_id)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

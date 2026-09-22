@@ -838,9 +838,11 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         "steps": steps,
         "errors": errors,
         "folio_was_open": bool(folio_row and folio_row["is_open"]),
+        # A clone never shifts a rail, so its undo never needs close_gap;
+        # that belongs to add_component(shift_following=True).
         "undo": (f"delete_component(component_id={new_id}"
                  + (f", pages=['{folio_row['page']}']" if folio_row else "")
-                 + (", close_gap=True" if shift_plan else "") + ")"),
+                 + ")"),
     }
 
 
@@ -2738,3 +2740,40 @@ def remove_text(app: Any, client: Any, text_id: int) -> dict:
         return {"ok": steps["remove"] in (0, None), "text_id": text_id,
                 "file_id": fid, "steps": steps}
     raise LookupError(f"no text with id {text_id}")
+
+
+def delete_location(app: Any, client: Any, location_id: int) -> dict:
+    """Remove a location that nothing references.
+
+    Refuses while a component, a folio or a cable still points at it, since
+    removing it would leave those objects pointing at nothing.
+    """
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectLocationManager())
+    loc = _u(mgr.findEwProjectLocationByID(int(location_id)))
+    if loc is None:
+        raise LookupError(f"no location with id {location_id}")
+    row = {"id": _u(loc.getID()), "tag": _u(loc.getTag()),
+           "tag_path": _u(loc.getTagPath()),
+           "description": _text(loc, "getDescription", LANG)}
+    users: list[dict] = []
+    for c in _each(client, _u(_u(proj.getEwProjectComponentManager())
+                              .getEwProjectComponentArray())):
+        if _u(c.getLocationID()) == int(location_id):
+            users.append({"kind": "component", "tag": _u(c.getTag())})
+    for f in _each(client, _u(_u(proj.getEwProjectFileManager())
+                              .getEwProjectFileArray())):
+        if _u(f.getLocationID()) == int(location_id):
+            users.append({"kind": "folio", "page": _u(f.getTag())})
+    for cb in _each(client, _u(_u(proj.getEwProjectCableManager())
+                               .getEwProjectCableArray())):
+        if int(location_id) in (_u(cb.getUpStreamLocationID()),
+                                _u(cb.getDownStreamLocationID())):
+            users.append({"kind": "cable", "tag": _u(cb.getTag())})
+    if users:
+        raise ValueError(
+            f"location {row['tag']!r} is still used by {len(users)} object(s): "
+            f"{users[:8]}")
+    rc = _rc(loc.remove())
+    return {"ok": rc in (0, None), "removed": row, "rc": rc,
+            "rc_name": _rc_name(rc)}
