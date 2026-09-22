@@ -2378,3 +2378,85 @@ def attach_manufacturer_part(app: Any, client: Any, tag: str,
             "dry_run": False, "part_id": _u(new.getID()), "steps": st,
             "bad_steps": bad, "component_parts": parts,
             "undo": f"remove project manufacturer part {_u(new.getID())}"}
+
+
+def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
+                 x: float, y: float, page: str | int | None = None,
+                 file_id: int | None = None, symbol_type: int = 20,
+                 rotation: float = 0.0, x_scale: float | None = None,
+                 y_scale: float | None = None, box: dict | None = None,
+                 dry_run: bool = True) -> dict:
+    """Draw an existing component on a page.
+
+    The counterpart to add_component for a component that already exists:
+    a device is normally drawn several times, its footprint on the cabinet
+    layout and a contact or coil on each schematic that uses it. The folio is
+    closed first when the GUI has it open, because symbols inserted into an
+    open folio are discarded when the editor writes its copy back.
+    """
+    comp = _find_one_component(app, client, tag)
+    cid = _u(comp.getID())
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+    bx = {**GO_BOX, **(box or {})}
+    if not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
+            and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP):
+        raise ValueError(f"({x}, {y}) is outside the drawable box {bx}")
+    plan = {"component": _component_row(comp, None), "folio": row,
+            "symbol_name": symbol_name, "symbol_type": symbol_type,
+            "x": x, "y": y, "rotation": rotation,
+            "x_scale": x_scale, "y_scale": y_scale}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    was_open = row["is_open"]
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "dry_run": False, "plan": plan, "steps": steps,
+                    "error": "could not close the folio; refusing to insert "
+                             "into a stale editor copy"}
+    sym = _u(f.newEwProjectSymbolFromSymbolType(symbol_type))
+    if sym is None:
+        if was_open:
+            f.open()
+        return {"ok": False, "dry_run": False, "plan": plan,
+                "error": "newEwProjectSymbolFromSymbolType returned NULL"}
+    steps["setObjectID"] = _rc(sym.setObjectID(cid))
+    steps["setEwSymbolName"] = _rc(sym.setEwSymbolName(symbol_name))
+    steps["setXPosition"] = _rc(sym.setXPosition(float(x)))
+    steps["setYPosition"] = _rc(sym.setYPosition(float(y)))
+    if rotation:
+        steps["setRotationAngle"] = _rc(sym.setRotationAngle(float(rotation)))
+    if x_scale is not None:
+        steps["setXScale"] = _rc(sym.setXScale(float(x_scale)))
+    if y_scale is not None:
+        steps["setYScale"] = _rc(sym.setYScale(float(y_scale)))
+    steps["insert"] = _rc(sym.insert())
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    bad = {k: v for k, v in steps.items() if v not in (0, None)}
+    return {"ok": not bad, "dry_run": False, "symbol_id": _u(sym.getID()),
+            "plan": plan, "steps": steps, "bad_steps": bad,
+            "undo": f"remove symbol {_u(sym.getID())}"}
+
+
+def remove_symbol(app: Any, client: Any, symbol_id: int) -> dict:
+    """Delete one drawn symbol, closing the folio first if the GUI has it."""
+    proj = _project(app)
+    smgr = _u(proj.getEwProjectSymbolManager())
+    sym = _u(smgr.getProjectSymbolByID(int(symbol_id)))
+    if sym is None:
+        raise LookupError(f"no symbol with id {symbol_id}")
+    fid = _u(sym.getFileID())
+    f = find_folio(app, client, file_id=fid)
+    was_open = bool(_u(f.isOpen()))
+    steps = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+    steps["remove"] = _rc(sym.remove())
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    return {"ok": steps["remove"] in (0, None), "symbol_id": symbol_id,
+            "file_id": fid, "steps": steps}

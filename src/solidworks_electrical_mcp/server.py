@@ -40,6 +40,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_folder, rename_folder, delete_folder,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
     add_location, attach_manufacturer_part,
+    place_symbol, remove_symbol,
     delete_component.
 """
 
@@ -1012,6 +1013,32 @@ def attach_manufacturer_part(tag: str, manufacturer: str, reference: str,
                 manufacturer=manufacturer, reference=reference,
                 description=description, width=width, height=height,
                 depth=depth, dry_run=dry_run)
+
+
+@mcp.tool
+def place_symbol(tag: str, symbol_name: str, x: float, y: float,
+                 page: str | int | None = None, file_id: int | None = None,
+                 symbol_type: int = 20, rotation: float = 0.0,
+                 x_scale: float | None = None, y_scale: float | None = None,
+                 box: dict | None = None, dry_run: bool = True) -> dict:
+    """Draw an EXISTING component on a page.
+
+    The counterpart to add_component when the device already exists: a
+    device is normally drawn several times, its footprint on the cabinet
+    layout and a contact or coil on each schematic that uses it. Note the
+    page type constrains the symbol type: a 2D cabinet layout takes
+    footprints (105) and returns NULL for a black box (30).
+    """
+    return _run(wf.place_symbol, tag=tag, symbol_name=symbol_name, x=x, y=y,
+                page=page, file_id=file_id, symbol_type=symbol_type,
+                rotation=rotation, x_scale=x_scale, y_scale=y_scale, box=box,
+                dry_run=dry_run)
+
+
+@mcp.tool
+def remove_symbol(symbol_id: int) -> dict:
+    """Delete one drawn symbol, closing the folio first if the GUI has it."""
+    return _run(wf.remove_symbol, symbol_id=symbol_id)
 
 
 def _isolate_stdout_from_native_pollution() -> None:
