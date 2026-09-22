@@ -244,21 +244,35 @@ def list_books_and_folders(app: Any, client: Any) -> dict:
     return {"books": books, "folders": folders}
 
 
-def _part_map(proj: Any, client: Any) -> dict[int, list[dict]]:
-    """component id -> manufacturer parts assigned to it."""
+def _part_map(proj: Any, client: Any,
+              only: set[int] | None = None) -> dict[int, list[dict]]:
+    """component id -> manufacturer parts assigned to it.
+
+    ``only`` restricts the result to those component ids, which skips the
+    text getters for every other part.
+
+    getObjectID is reused for location-owned parts (rails, ducts), so an id
+    that is also a location id is ambiguous and has to be resolved through
+    getEwProjectComponent. That call is a COM round trip per part, so it is
+    made only for the handful of ambiguous ids rather than for all of them.
+    """
     out: dict[int, list[dict]] = {}
+    loc_mgr = _u(proj.getEwProjectLocationManager())
+    location_ids = {_u(loc.getID())
+                    for loc in _each(client, _u(loc_mgr.getEwProjectLocationArray()))}
     mgr = _u(proj.getEwProjectManufacturerPartManager())
     for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
-        # getObjectID is reused for location-owned parts (rails, ducts), so a
-        # location id can collide with a component id. Keep only parts whose
-        # owner really is a component.
-        try:
-            owner = _u(p.getEwProjectComponent())
-        except Exception:  # noqa: BLE001
-            owner = None
-        if owner is None:
+        comp_id = _u(p.getObjectID())
+        if comp_id in location_ids:
+            try:
+                owner = _u(p.getEwProjectComponent())
+            except Exception:  # noqa: BLE001
+                owner = None
+            if owner is None:
+                continue  # the part belongs to the location, not a component
+            comp_id = _u(owner.getID())
+        if only is not None and comp_id not in only:
             continue
-        comp_id = _u(owner.getID())
         out.setdefault(comp_id, []).append({
             "part_id": _u(p.getID()),
             "manufacturer": _u(p.getManufacturer()),
@@ -322,14 +336,15 @@ def find_component(app: Any, client: Any, tag: str) -> dict:
     mgr = _u(proj.getEwProjectComponentManager())
     want = tag.strip()
     want_bare = want.lstrip("-")
-    parts = _part_map(proj, client)
-    matches = []
+    hits = []
     for c in _each(client, _u(mgr.getEwProjectComponentArray())):
         t = str(_u(c.getTag()))
         tp = str(_u(c.getTagPath()))
         if t == want or t == want_bare or tp == want \
                 or tp.endswith("-" + want_bare):
-            matches.append(_component_row(c, parts))
+            hits.append(c)
+    parts = _part_map(proj, client, only={_u(c.getID()) for c in hits})
+    matches = [_component_row(c, parts) for c in hits]
     return {"query": tag, "count": len(matches), "components": matches}
 
 
@@ -601,7 +616,7 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
     proj = _project(app)
     src = _find_one_component(app, client, source_tag)
     src_id = _u(src.getID())
-    parts = _part_map(proj, client).get(src_id, [])
+    parts = _part_map(proj, client, only={src_id}).get(src_id, [])
     new_bare = new_tag.strip().lstrip("-")
     src_root = str(_u(src.getTagRoot()) or "").strip() or _tag_root(str(_u(src.getTag())))
     new_root = _tag_root(new_bare)
@@ -696,6 +711,14 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
     placed: list[dict] = []
     if folio_row is not None:
         f = find_folio(app, client, file_id=folio_row["id"])
+        # A folio open in the GUI holds its own copy of the drawing. Symbols
+        # inserted through the API while it is open are lost when the editor
+        # writes that stale copy back on close. Close it first, reopen after
+        # so the new symbols render.
+        reopened = False
+        if folio_row["is_open"]:
+            step("folio.close (was open in the GUI)", f.close)
+            reopened = True
         for s in plan["symbols_to_copy"]:
             sym = _u(f.newEwProjectSymbolFromSymbolType(s["symbol_type_code"]))
             if sym is None:
@@ -718,9 +741,11 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
             placed.append({"symbol_id": _u(sym.getID()),
                            "symbol_name": s["symbol_name"],
                            "x": s["new_x"], "y": s["new_y"]})
+        if reopened:
+            step("folio.open (restore the GUI view)", f.open)
 
     # 4. read back
-    parts_after = _part_map(proj, client).get(new_id, [])
+    parts_after = _part_map(proj, client, only={new_id}).get(new_id, [])
     new_row = _component_row(new, {new_id: parts_after})
     errors = [st for st in steps
               if st.get("error") or st.get("rc") not in (0, None)]
@@ -732,6 +757,7 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         "plan": plan,
         "steps": steps,
         "errors": errors,
+        "folio_was_open": bool(folio_row and folio_row["is_open"]),
         "undo": f"delete_component(component_id={new_id})",
     }
 
