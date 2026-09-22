@@ -188,6 +188,7 @@ def main() -> int:
         # clone_component / delete_component round trip on the drawn page:
         # clone the first symbol's component into a throwaway tag, verify the
         # component, its parts and the copied symbol, then delete it again.
+        src_tag = None
         if drawn:
             cand, syms = drawn
             src_sym = next((s for s in syms["symbols"]
@@ -250,6 +251,65 @@ def main() -> int:
                 after2 = tool("folio_symbols", {"page": cand["page"]})
                 check(after2.get("count") == syms["count"],
                       "delete_component: symbol count did not return to baseline")
+
+        # add_component: build the same kind of unit from scratch (no source
+        # to copy) next to an existing one, then remove it again.
+        if drawn and src_tag:
+            ref = tool("find_component", {"tag": src_tag})
+            refc = ref["components"][0] if ref.get("count") else None
+            part = (refc or {}).get("parts", [None])[0]
+            if part and part.get("reference"):
+                add_tag = src_root + "9902"
+                tool("delete_component", {"tag": add_tag,
+                                          "pages": [cand["page"]]})
+                plan = tool("add_component", {
+                    "tag": add_tag, "manufacturer": part["manufacturer"],
+                    "reference": part["reference"],
+                    "description": "live test, from scratch",
+                    "location_id": refc["location_id"],
+                    "page": cand["page"], "after_tag": src_tag})
+                print("add_component plan:", plan.get("ok"),
+                      (plan.get("plan") or {}).get("symbol"),
+                      "warnings:", (plan.get("plan") or {}).get("warnings"))
+                check(plan.get("ok") and plan.get("dry_run") is True,
+                      f"add_component dry run failed: {plan}")
+                sym_plan = (plan.get("plan") or {}).get("symbol") or {}
+                check(sym_plan.get("symbol_name"),
+                      "add_component could not resolve a library symbol")
+                # the part is already used by K-rooted components, so a
+                # foreign root must be refused
+                wrong = tool("add_component", {
+                    "tag": "QQ9902", "manufacturer": part["manufacturer"],
+                    "reference": part["reference"], "page": cand["page"],
+                    "after_tag": src_tag})
+                check(wrong.get("ok") is False
+                      and "tag root" in str(wrong.get("error")),
+                      "add_component must refuse a root the part does not use")
+                done = tool("add_component", {
+                    "tag": add_tag, "manufacturer": part["manufacturer"],
+                    "reference": part["reference"],
+                    "description": "live test, from scratch",
+                    "location_id": refc["location_id"],
+                    "page": cand["page"], "after_tag": src_tag,
+                    "dry_run": False})
+                print("add_component:", done.get("ok"),
+                      done.get("new_component", {}).get("tag_path"),
+                      done.get("symbol_placed"), done.get("errors"))
+                check(done.get("ok") and not done.get("errors"),
+                      f"add_component failed: {done.get('errors')}")
+                new2 = done.get("new_component", {})
+                check([p["reference"] for p in new2.get("parts", [])]
+                      == [part["reference"]],
+                      "add_component: manufacturer part not attached")
+                check(done.get("symbol_placed"),
+                      "add_component: no symbol placed on the page")
+                d2 = tool("delete_component",
+                          {"component_id": new2.get("id"),
+                           "pages": [cand["page"]]})
+                check(d2.get("ok"), f"add_component cleanup failed: {d2}")
+                gone2 = tool("find_component", {"tag": add_tag})
+                check(gone2.get("count") == 0,
+                      "add_component cleanup: component still exists")
 
         name = info["name"]
         rn = tool("rename_project", {"new_name": name})

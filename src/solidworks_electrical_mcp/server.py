@@ -34,7 +34,8 @@ call_ops / array_ops / shift_folio_numbers / get_enum / typelib_members
 Task-level tools (workflows.py): reconnect, project_info, list_folios,
     find_folio, list_locations, list_books_and_folders, list_components,
     find_component, list_cables, folio_symbols, export_folio_pdf,
-    regenerate_title_blocks, rename_project, close_and_reopen_folio.
+    regenerate_title_blocks, rename_project, close_and_reopen_folio,
+    add_component, clone_component, delete_component.
 """
 
 from __future__ import annotations
@@ -62,7 +63,8 @@ mcp = FastMCP(
         "list_books_and_folders · list_components · find_component · "
         "list_cables · folio_symbols · export_folio_pdf (then Read the PDF to "
         "SEE the page) · regenerate_title_blocks · rename_project · "
-        "close_and_reopen_folio · clone_component (\"on sheet 10 clone K32 "
+        "close_and_reopen_folio · add_component (build one from scratch) "
+        "· clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
         "cached COM state after "
         "SOLIDWORKS was restarted). Reach for the generic call/call_ops/"
@@ -775,6 +777,40 @@ def delete_component(component_id: int | None = None,
     from every folio (slow on a large project)."""
     return _run(wf.delete_component, component_id=component_id, tag=tag,
                 pages=pages)
+
+
+@mcp.tool
+def add_component(tag: str, manufacturer: str, reference: str,
+                  description: str | None = None,
+                  location_tag: str | None = None,
+                  location_id: int | None = None,
+                  parent_tag: str | None = None,
+                  page: str | int | None = None, file_id: int | None = None,
+                  x: float | None = None, y: float | None = None,
+                  after_tag: str | None = None,
+                  symbol_name: str | None = None,
+                  dry_run: bool = True) -> dict:
+    """Build a component from scratch: "add an ABB ESB20-11N-01 as K39 on
+    sheet 10 after K38".
+
+    The counterpart to clone_component when there is no unit to copy. The
+    symbol comes from the manufacturer part's own library symbol rather than
+    from a source component, and the position comes from ``x``/``y`` or from
+    ``after_tag`` (the next free slot after that component's symbol). Scale
+    and rotation are taken from an existing symbol of the same kind on the
+    page, because a cabinet footprint is drawn scaled to the part's real
+    millimetres and would otherwise land at scale 1.
+
+    The part must already be in the project catalogue. If other components
+    already use it, the new tag must share their tag root, which keeps a
+    relay rooted K without a source to inherit from. ``dry_run`` is the
+    default and returns the plan; the result carries an ``undo`` hint.
+    """
+    return _run(wf.add_component, tag=tag, manufacturer=manufacturer,
+                reference=reference, description=description,
+                location_tag=location_tag, location_id=location_id,
+                parent_tag=parent_tag, page=page, file_id=file_id, x=x, y=y,
+                after_tag=after_tag, symbol_name=symbol_name, dry_run=dry_run)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

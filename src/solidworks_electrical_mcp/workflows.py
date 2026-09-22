@@ -886,3 +886,331 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc), "symbols_removed": symbols_removed,
             "symbols_skipped": skipped, "swept_all_folios": swept_all}
+
+
+# --------------------------------------------------------------------------
+# Write-side: build a component from scratch (no source to copy)
+
+
+def _symbol_name_for_part(app: Any, part: Any, file_type_code: int) -> tuple:
+    """(library symbol name, symbol type) a manufacturer part draws itself with.
+
+    A part carries its own symbol ids: a 2D footprint for a cabinet layout and
+    a scheme symbol for a schematic. They are ids into the ENVIRONMENT symbol
+    library, so they resolve through getEwEnvironment().getEwSymbolManager(),
+    not through the project. Returns ``(None, type)`` when the part declares no
+    symbol for that kind of page.
+    """
+    if file_type_code == 9:          # kFile2DCabinetLayout
+        getter, stype = "get2DFootPrintSymbolID", 105   # kSymbol2dFootprint
+    elif file_type_code == 1:        # kFileLineDiagram
+        getter, stype = "getLineDiagramSymbolID", 20    # kSymbolComponent
+    else:
+        getter, stype = "getSchemeSymbolID", 20
+    try:
+        sym_id = _u(getattr(part, getter)())
+    except Exception:  # noqa: BLE001
+        return None, stype
+    if not isinstance(sym_id, int) or sym_id <= 0:
+        return None, stype
+    try:
+        env = _u(app.getEwEnvironment())
+        lib = _u(env.getEwSymbolManager())
+        sym = _u(lib.findEwSymbolXById(sym_id))
+        if sym is None:
+            return None, stype
+        return _u(sym.getName()), stype
+    except Exception:  # noqa: BLE001
+        return None, stype
+
+
+def _reference_symbol_on_page(app: Any, client: Any, file_id: int,
+                              symbol_name: str | None,
+                              after_component_id: int | None) -> dict | None:
+    """An existing symbol on the page to take scale (and row) from.
+
+    A fresh symbol defaults to scale 1, but a cabinet footprint is drawn at
+    the scale that fits the part's real millimetres onto the sheet, so placing
+    one at scale 1 puts a wildly oversized box on the layout. Prefer the
+    symbol of ``after_component_id``; otherwise any symbol with the same
+    library name.
+    """
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    fallback = None
+    for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
+        row = {
+            "symbol_id": _u(s.getID()), "symbol_name": _u(s.getEwSymbolName()),
+            "symbol_type_code": _u(s.getEwSymbolType()),
+            "x": _u(s.getXPosition()), "y": _u(s.getYPosition()),
+            "rotation": _u(s.getRotationAngle()),
+            "x_scale": _u(s.getXScale()), "y_scale": _u(s.getYScale()),
+            "width": _u(s.getWidth()), "height": _u(s.getHeight()),
+        }
+        if after_component_id and _u(s.getObjectID()) == after_component_id:
+            return row
+        if fallback is None and symbol_name and row["symbol_name"] == symbol_name:
+            fallback = row
+    return fallback
+
+
+def _root_in_use_for_part(app: Any, client: Any, manufacturer: str,
+                          reference: str) -> tuple:
+    """(tag root, example tag paths) of the components already using this part.
+
+    A manufacturer part that is already in the project carries an established
+    device class: every ABB ESB20 contactor on this project is a K. That makes
+    the root checkable without a source component to inherit from, which is
+    how the relays-are-always-K rule is enforced on a from-scratch add.
+    Returns ``(None, [])`` when the part is not in use yet.
+    """
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectManufacturerPartManager())
+    owners: list[Any] = []
+    for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
+        if str(_u(p.getReference())) != str(reference):
+            continue
+        if manufacturer and str(_u(p.getManufacturer())) != str(manufacturer):
+            continue
+        try:
+            owner = _u(p.getEwProjectComponent())
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is not None:
+            owners.append(owner)
+    roots: dict[str, list[str]] = {}
+    for o in owners:
+        root = (str(_u(o.getTagRoot()) or "").strip()
+                or _tag_root(str(_u(o.getTag()))))
+        if root:
+            roots.setdefault(root, []).append(str(_u(o.getTagPath())))
+    if not roots:
+        return None, []
+    best = max(roots, key=lambda r: len(roots[r]))
+    return best, roots[best][:5]
+
+
+def add_component(app: Any, client: Any, tag: str, manufacturer: str,
+                  reference: str, description: str | None = None,
+                  location_tag: str | None = None,
+                  location_id: int | None = None,
+                  parent_tag: str | None = None,
+                  page: str | int | None = None, file_id: int | None = None,
+                  x: float | None = None, y: float | None = None,
+                  after_tag: str | None = None,
+                  symbol_name: str | None = None,
+                  dry_run: bool = True) -> dict:
+    """Create a component from scratch and give it a manufacturer part.
+
+    Unlike ``clone_component`` there is no source to copy: the symbol comes
+    from the manufacturer part's own library symbol, and the placement comes
+    from ``x``/``y`` or from ``after_tag`` (place in the next free slot after
+    that component's symbol on the page).
+
+    The manufacturer part must already be in the project catalogue;
+    ``assignManufacturerPart`` answers EW_BAD_INPUTS (2) otherwise. If other
+    components already use this part, the new tag must share their tag root,
+    which is what keeps a relay rooted K without a source to inherit from.
+    """
+    proj = _project(app)
+    new_bare = tag.strip().lstrip("-")
+    new_root = _tag_root(new_bare)
+
+    # 1. the tag must be free, and must match the class this part already has
+    try:
+        _find_one_component(app, client, new_bare)
+    except LookupError as e:
+        if "ambiguous" in str(e):
+            raise ValueError(f"{new_bare!r} already exists more than once: {e}") from e
+    else:
+        raise ValueError(f"a component tagged {new_bare!r} already exists")
+
+    part_root, examples = _root_in_use_for_part(app, client, manufacturer,
+                                                reference)
+    if part_root and new_root.casefold() != part_root.casefold():
+        raise ValueError(
+            f"tag root must be {part_root!r} for {manufacturer} {reference}: "
+            f"the components already using this part are {examples}. "
+            f"Got {new_bare!r} (root {new_root!r}). MR rule: a device keeps "
+            "its class; relays are always rooted K.")
+    if part_root and new_root != part_root:
+        new_bare = part_root + new_bare[len(new_root):]
+
+    # 2. where it lives
+    if location_id is None and location_tag:
+        loc_mgr = _u(proj.getEwProjectLocationManager())
+        hits = [l for l in _each(client, _u(loc_mgr.getEwProjectLocationArray()))
+                if str(_u(l.getTag())) == str(location_tag).lstrip("+")]
+        if not hits:
+            raise LookupError(f"no location tagged {location_tag!r}")
+        if len(hits) > 1:
+            raise LookupError(
+                f"location tag {location_tag!r} is ambiguous "
+                f"({[_u(l.getTagPath()) for l in hits]}); give location_id")
+        location_id = _u(hits[0].getID())
+    parent_id = None
+    if parent_tag:
+        parent_id = _u(_find_one_component(app, client, parent_tag).getID())
+
+    # 3. the page, the symbol it will be drawn with, and where it goes
+    folio_row = None
+    ref_symbol = None
+    after_id = None
+    sym_type = None
+    if page is not None or file_id is not None:
+        f = find_folio(app, client, page=page, file_id=file_id)
+        folio_row = _folio_row(f)
+        if after_tag:
+            after_id = _u(_find_one_component(app, client, after_tag).getID())
+        # the part's own symbol for this kind of page
+        part_mgr = _u(proj.getEwProjectManufacturerPartManager())
+        sample = None
+        for p in _each(client, _u(part_mgr.getEwProjectManufacturerPartArray())):
+            if str(_u(p.getReference())) == str(reference):
+                sample = p
+                break
+        derived_name, sym_type = (None, 20)
+        if sample is not None:
+            derived_name, sym_type = _symbol_name_for_part(
+                app, sample, folio_row["file_type_code"])
+        symbol_name = symbol_name or derived_name
+        ref_symbol = _reference_symbol_on_page(app, client, folio_row["id"],
+                                               symbol_name, after_id)
+        if symbol_name is None and ref_symbol is not None:
+            symbol_name = ref_symbol["symbol_name"]
+        if symbol_name is None:
+            raise LookupError(
+                f"cannot tell which library symbol to draw {reference!r} with "
+                f"on page {folio_row['page']!r}: the part declares none for "
+                "this page type and no symbol of it is already on the page. "
+                "Pass symbol_name explicitly.")
+        if ref_symbol is not None:
+            sym_type = ref_symbol["symbol_type_code"]
+        if x is None or y is None:
+            if ref_symbol is None:
+                raise ValueError(
+                    "no x/y given and nothing on the page to place after: "
+                    "pass x and y, or after_tag naming a component whose "
+                    "symbol sits where the new one should follow.")
+            y = ref_symbol["y"] if y is None else y
+            if x is None:
+                off = _next_free_slot(app, client, folio_row["id"],
+                                      [ref_symbol])
+                x = ref_symbol["x"] + off
+
+    warnings: list[str] = []
+    if folio_row is not None and ref_symbol is None:
+        warnings.append(
+            "no existing symbol of this kind on the page, so the new one is "
+            "drawn at scale 1; a cabinet footprint is normally scaled to the "
+            "part's real millimetres, so check its size on the sheet")
+
+    plan = {
+        "tag": new_bare, "manufacturer": manufacturer, "reference": reference,
+        "description": description, "location_id": location_id,
+        "parent_id": parent_id, "folio": folio_row,
+        "symbol": (None if folio_row is None else {
+            "symbol_name": symbol_name, "symbol_type_code": sym_type,
+            "x": x, "y": y,
+            "x_scale": (ref_symbol or {}).get("x_scale", 1.0),
+            "y_scale": (ref_symbol or {}).get("y_scale", 1.0),
+            "rotation": (ref_symbol or {}).get("rotation", 0.0),
+            "scale_taken_from": (ref_symbol or {}).get("symbol_id"),
+        }),
+        "tag_root_in_use_for_part": part_root,
+        "warnings": warnings,
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    steps: list[dict] = []
+
+    def step(name: str, fn: Callable[[], Any]) -> Any:
+        try:
+            r = fn()
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"step": name, "error": f"{type(exc).__name__}: {exc}"})
+            return None
+        steps.append({"step": name, "rc": _rc(r), "rc_name": _rc_name(_rc(r))})
+        return r
+
+    # 4. the component
+    mgr = _u(proj.getEwProjectComponentManager())
+    new = _u(mgr.newEwProjectComponent())
+    step("insert", new.insert)
+    step("setTag", lambda: new.setTag(new_bare))
+    if description:
+        step("setDescription", lambda: new.setDescription(LANG, description))
+    if isinstance(location_id, int) and location_id > 0:
+        step("setLocationID", lambda: new.setLocationID(location_id))
+    if isinstance(parent_id, int) and parent_id > 0:
+        step("setParentID", lambda: new.setParentID(parent_id))
+    step("update", new.update)
+    new_id = _u(new.getID())
+
+    # 5. the manufacturer part (must already be in the project catalogue)
+    rc_part = _rc(step(f"assignManufacturerPart({manufacturer},{reference})",
+                       lambda: new.assignManufacturerPart(manufacturer,
+                                                          reference)))
+    if rc_part == 2:
+        warnings.append(
+            f"assignManufacturerPart returned EW_BAD_INPUTS (2): "
+            f"{manufacturer} {reference} is not in this project's catalogue. "
+            "Add the part to the project first.")
+
+    # 6. the symbol
+    placed = None
+    if folio_row is not None:
+        f = find_folio(app, client, file_id=folio_row["id"])
+        reopened = False
+        if folio_row["is_open"]:
+            step("folio.close (was open in the GUI)", f.close)
+            cs = steps[-1]
+            if cs.get("error") or cs.get("rc") not in (0, None):
+                return {
+                    "ok": False, "dry_run": False,
+                    "new_component": _component_row(new, None),
+                    "symbol_placed": None, "plan": plan, "steps": steps,
+                    "warnings": warnings,
+                    "error": (f"could not close folio {folio_row['page']!r}; "
+                              "refusing to insert a symbol into a folio open "
+                              "in the GUI because the editor would discard it"),
+                    "undo": f"delete_component(component_id={new_id})",
+                }
+            reopened = True
+        sym = _u(f.newEwProjectSymbolFromSymbolType(sym_type))
+        if sym is None:
+            steps.append({"step": "newEwProjectSymbolFromSymbolType",
+                          "error": "returned NULL"})
+        else:
+            spec = plan["symbol"]
+            step("sym.setObjectID", lambda: sym.setObjectID(new_id))
+            step("sym.setEwSymbolName",
+                 lambda: sym.setEwSymbolName(spec["symbol_name"]))
+            step("sym.setXPosition", lambda: sym.setXPosition(spec["x"]))
+            step("sym.setYPosition", lambda: sym.setYPosition(spec["y"]))
+            if spec["rotation"]:
+                step("sym.setRotationAngle",
+                     lambda: sym.setRotationAngle(spec["rotation"]))
+            if spec["x_scale"] and spec["x_scale"] != 1:
+                step("sym.setXScale", lambda: sym.setXScale(spec["x_scale"]))
+            if spec["y_scale"] and spec["y_scale"] != 1:
+                step("sym.setYScale", lambda: sym.setYScale(spec["y_scale"]))
+            step("sym.insert", sym.insert)
+            placed = {"symbol_id": _u(sym.getID()),
+                      "symbol_name": spec["symbol_name"],
+                      "x": spec["x"], "y": spec["y"]}
+        if reopened:
+            step("folio.open (restore the GUI view)", f.open)
+
+    parts_after = _part_map(proj, client, only={new_id}).get(new_id, [])
+    new_row = _component_row(new, {new_id: parts_after})
+    errors = [st for st in steps
+              if st.get("error") or st.get("rc") not in (0, None)]
+    return {
+        "ok": not errors and new_row["tag"] == new_bare,
+        "dry_run": False, "new_component": new_row, "symbol_placed": placed,
+        "plan": plan, "steps": steps, "errors": errors, "warnings": warnings,
+        "folio_was_open": bool(folio_row and folio_row["is_open"]),
+        "undo": f"delete_component(component_id={new_id})",
+    }
