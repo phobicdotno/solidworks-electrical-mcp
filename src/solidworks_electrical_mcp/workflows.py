@@ -1109,6 +1109,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                   after_tag: str | None = None,
                   shift_following: bool = False,
                   symbol_name: str | None = None,
+                  allow_new_root: bool = False,
                   dry_run: bool = True) -> dict:
     """Create a component from scratch and give it a manufacturer part.
 
@@ -1142,6 +1143,10 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
 
     part_root, examples = _root_in_use_for_part(app, client, manufacturer,
                                                 reference)
+    if allow_new_root:
+        # A deliberate new series for this part, e.g. a CC_ prefix kept
+        # separate from the existing marks. The caller has said so.
+        part_root = None
     if part_root and new_root.casefold() != part_root.casefold():
         raise ValueError(
             f"tag root must be {part_root!r} for {manufacturer} {reference}: "
@@ -2031,7 +2036,9 @@ def add_folio(app: Any, client: Any, description: str,
         steps["setTagNumber"] = _rc(new.setTagNumber(int(page_number)))
         steps["update2"] = _rc(new.update())
 
-    row = _folio_row(new)
+    # Read the row back AFTER the cascade: during it the new folio is parked
+    # on a temporary number, and reporting that number would be a lie.
+    row = _folio_row(find_folio(app, client, file_id=new_id))
     return {"ok": row["id"] == new_id and row["folder_id"] == (
                 folder_id if folder_id is not None else row["folder_id"]),
             "dry_run": False, "folio": row, "steps": steps,
@@ -2290,3 +2297,84 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
             "crowded_count": len(crowded), "crowded": crowded,
             "outside_count": len(out), "outside_box": out,
             "ok": not crowded and not out}
+
+
+def add_location(app: Any, client: Any, tag: str, description: str,
+                 parent_location_id: int | None = None,
+                 dry_run: bool = True) -> dict:
+    """Create a location. Tags are unique among siblings."""
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectLocationManager())
+    sibs = []
+    for l in _each(client, _u(mgr.getEwProjectLocationArray())):
+        sibs.append({"id": _u(l.getID()), "tag": str(_u(l.getTag())),
+                     "tag_path": _u(l.getTagPath()),
+                     "description": _text(l, "getDescription", LANG)})
+    plan = {"tag": tag, "description": description,
+            "parent_location_id": parent_location_id, "siblings": sibs}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+    new = _u(mgr.newEwProjectLocation())
+    st = {"insert": _rc(new.insert())}
+    st.update(_set_mark(new, str(tag)))
+    st["setDescription"] = _rc(new.setDescription(LANG, description))
+    if parent_location_id is not None:
+        st["setParentID"] = _rc(new.setParentID(int(parent_location_id)))
+    st["update"] = _rc(new.update())
+    return {"ok": True, "dry_run": False,
+            "location": {"id": _u(new.getID()), "tag": _u(new.getTag()),
+                         "tag_path": _u(new.getTagPath()),
+                         "description": _text(new, "getDescription", LANG)},
+            "steps": st}
+
+
+def attach_manufacturer_part(app: Any, client: Any, tag: str,
+                             manufacturer: str, reference: str,
+                             description: str | None = None,
+                             width: float | None = None,
+                             height: float | None = None,
+                             depth: float | None = None,
+                             dry_run: bool = True) -> dict:
+    """Give a component a manufacturer part the LIBRARY does not carry.
+
+    ``assignManufacturerPart`` resolves against the environment catalogue and
+    answers EW_BAD_INPUTS (2) for anything not in it, which is what happens
+    with a part that only exists on this project. Creating the project part
+    and binding it to the component with setObjectID does the same job: that
+    is the link getEwProjectComponent reads back, so the part then shows up
+    on the component exactly like a catalogue one.
+    """
+    comp = _find_one_component(app, client, tag)
+    cid = _u(comp.getID())
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectManufacturerPartManager())
+    existing = []
+    for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
+        if _u(p.getObjectID()) == cid and str(_u(p.getReference())) == reference:
+            existing.append(_u(p.getID()))
+    plan = {"component": _component_row(comp, None),
+            "manufacturer": manufacturer, "reference": reference,
+            "description": description, "already_attached": existing}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+    if existing:
+        return {"ok": True, "dry_run": False, "plan": plan,
+                "note": "already attached", "part_ids": existing}
+    new = _u(mgr.newEwProjectManufacturerPart())
+    st = {"insert": _rc(new.insert())}
+    st["setManufacturer"] = _rc(new.setManufacturer(manufacturer))
+    st["setReference"] = _rc(new.setReference(reference))
+    if description:
+        st["setDescription"] = _rc(new.setDescription(LANG, description))
+    for name, val in (("setWidth", width), ("setHeight", height),
+                      ("setDepth", depth)):
+        if val is not None:
+            st[name] = _rc(getattr(new, name)(float(val)))
+    st["setObjectID"] = _rc(new.setObjectID(cid))
+    st["update"] = _rc(new.update())
+    parts = _part_map(proj, client, only={cid}).get(cid, [])
+    bad = {k: v for k, v in st.items() if v not in (0, None)}
+    return {"ok": not bad and any(p["reference"] == reference for p in parts),
+            "dry_run": False, "part_id": _u(new.getID()), "steps": st,
+            "bad_steps": bad, "component_parts": parts,
+            "undo": f"remove project manufacturer part {_u(new.getID())}"}

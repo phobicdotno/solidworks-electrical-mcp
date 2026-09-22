@@ -39,6 +39,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     renumber_components, audit_tag_roots,
     add_folder, rename_folder, delete_folder,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
+    add_location, attach_manufacturer_part,
     delete_component.
 """
 
@@ -800,6 +801,7 @@ def add_component(tag: str, manufacturer: str, reference: str,
                   after_tag: str | None = None,
                   shift_following: bool = False,
                   symbol_name: str | None = None,
+                  allow_new_root: bool = False,
                   dry_run: bool = True) -> dict:
     """Build a component from scratch: "add an ABB ESB20-11N-01 as K39 on
     sheet 10 after K38".
@@ -829,7 +831,8 @@ def add_component(tag: str, manufacturer: str, reference: str,
                 location_tag=location_tag, location_id=location_id,
                 parent_tag=parent_tag, page=page, file_id=file_id, x=x, y=y,
                 after_tag=after_tag, shift_following=shift_following,
-                symbol_name=symbol_name, dry_run=dry_run)
+                symbol_name=symbol_name, allow_new_root=allow_new_root,
+                dry_run=dry_run)
 
 
 @mcp.tool
@@ -980,6 +983,35 @@ def check_drawing_rules(page: str | int | None = None,
     """
     return _run(wf.check_drawing_rules, page=page, file_id=file_id,
                 min_spacing=min_spacing, box=box)
+
+
+@mcp.tool
+def add_location(tag: str, description: str,
+                 parent_location_id: int | None = None,
+                 dry_run: bool = True) -> dict:
+    """Create a location, e.g. "L6" / "CC100 Enclosure"."""
+    return _run(wf.add_location, tag=tag, description=description,
+                parent_location_id=parent_location_id, dry_run=dry_run)
+
+
+@mcp.tool
+def attach_manufacturer_part(tag: str, manufacturer: str, reference: str,
+                             description: str | None = None,
+                             width: float | None = None,
+                             height: float | None = None,
+                             depth: float | None = None,
+                             dry_run: bool = True) -> dict:
+    """Give a component a manufacturer part the library does not carry.
+
+    assignManufacturerPart resolves against the environment catalogue and
+    answers EW_BAD_INPUTS (2) for anything not in it. This creates the
+    project part and binds it to the component instead, which is the same
+    link the component reads its parts back through.
+    """
+    return _run(wf.attach_manufacturer_part, tag=tag,
+                manufacturer=manufacturer, reference=reference,
+                description=description, width=width, height=height,
+                depth=depth, dry_run=dry_run)
 
 
 def _isolate_stdout_from_native_pollution() -> None:
