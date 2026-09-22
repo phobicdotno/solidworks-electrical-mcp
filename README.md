@@ -39,7 +39,8 @@ Electrical must be running with a project open.
 | `rename_project(new_name)` | Rename the project (drives the cover title). |
 | `close_and_reopen_folio(page? / file_id?)` | Force a page to redraw. |
 | `clone_component(source_tag, new_tag, page?, offset_x?, offset_y?, dry_run=True)` | "On sheet 10, clone K32 into K33": new component with the same description, location, class and manufacturer parts, plus the source's symbols on that page copied into the next free slot. Dry run by default. |
-| `delete_component(component_id? / tag?)` | Remove a component and its symbols (the undo for a clone). |
+| `add_component(tag, manufacturer, reference, page?, after_tag?, shift_following?, x?, y?, dry_run=True)` | Build a unit with no source to copy. The symbol comes from the manufacturer part itself; scale and rotation from a neighbour, because a cabinet footprint is drawn scaled to real millimetres. `shift_following` inserts into a rail, pushing everything right of `after_tag` along by one device pitch. |
+| `delete_component(component_id? / tag?, pages?, close_gap?)` | Remove a component and its symbols (the undo for a clone or an add). `close_gap` pulls the rail back over the hole. |
 | `reconnect()` | Drop cached COM state and attach again (after SOLIDWORKS restarted). |
 
 Two failure modes are handled automatically: a COM factory dispatched while

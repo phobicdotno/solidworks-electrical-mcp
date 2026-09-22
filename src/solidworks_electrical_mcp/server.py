@@ -771,12 +771,16 @@ def clone_component(source_tag: str, new_tag: str,
 @mcp.tool
 def delete_component(component_id: int | None = None,
                      tag: str | None = None,
-                     pages: list[str | int] | None = None) -> dict:
+                     pages: list[str | int] | None = None,
+                     close_gap: bool = False) -> dict:
     """Remove a component by id or by unambiguous tag. If symbols block the
     remove they are deleted first: from ``pages`` when given (fast), else
-    from every folio (slow on a large project)."""
+    from every folio (slow on a large project).
+
+    ``close_gap`` pulls the rest of the rail back over the hole, which is the
+    undo for an ``add_component(..., shift_following=True)`` insert."""
     return _run(wf.delete_component, component_id=component_id, tag=tag,
-                pages=pages)
+                pages=pages, close_gap=close_gap)
 
 
 @mcp.tool
@@ -788,6 +792,7 @@ def add_component(tag: str, manufacturer: str, reference: str,
                   page: str | int | None = None, file_id: int | None = None,
                   x: float | None = None, y: float | None = None,
                   after_tag: str | None = None,
+                  shift_following: bool = False,
                   symbol_name: str | None = None,
                   dry_run: bool = True) -> dict:
     """Build a component from scratch: "add an ABB ESB20-11N-01 as K39 on
@@ -803,14 +808,22 @@ def add_component(tag: str, manufacturer: str, reference: str,
 
     The part must already be in the project catalogue. If other components
     already use it, the new tag must share their tag root, which keeps a
-    relay rooted K without a source to inherit from. ``dry_run`` is the
-    default and returns the plan; the result carries an ``undo`` hint.
+    relay rooted K without a source to inherit from.
+
+    ``shift_following`` INSERTS into a rail instead of appending: the device
+    goes directly after ``after_tag`` and everything further right on that
+    row is pushed along by one device pitch. Use it when the neighbours are
+    adjacent, e.g. adding a relay between K29 and K30.
+
+    ``dry_run`` is the default and returns the plan, including every symbol
+    that would move; the result carries an ``undo`` hint.
     """
     return _run(wf.add_component, tag=tag, manufacturer=manufacturer,
                 reference=reference, description=description,
                 location_tag=location_tag, location_id=location_id,
                 parent_tag=parent_tag, page=page, file_id=file_id, x=x, y=y,
-                after_tag=after_tag, symbol_name=symbol_name, dry_run=dry_run)
+                after_tag=after_tag, shift_following=shift_following,
+                symbol_name=symbol_name, dry_run=dry_run)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

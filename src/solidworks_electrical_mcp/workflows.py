@@ -801,19 +801,27 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         "steps": steps,
         "errors": errors,
         "folio_was_open": bool(folio_row and folio_row["is_open"]),
-        "undo": f"delete_component(component_id={new_id})",
+        "undo": (f"delete_component(component_id={new_id}"
+                 + (f", pages=['{folio_row['page']}']" if folio_row else "")
+                 + (", close_gap=True" if shift_plan else "") + ")"),
     }
 
 
 def delete_component(app: Any, client: Any, component_id: int | None = None,
                      tag: str | None = None,
-                     pages: list[str | int] | None = None) -> dict:
+                     pages: list[str | int] | None = None,
+                     close_gap: bool = False) -> dict:
     """Remove a component by id or tag.
 
     A plain remove is tried first. If SOLIDWORKS answers EW_CANNOT_REMOVE
     (35) the component still has symbols bound to it: those are removed
     from ``pages`` if given (fast), otherwise from every folio (a full sweep,
     minutes on a large project), and the remove is retried.
+
+    ``close_gap`` pulls the rest of the rail back over the hole: everything
+    right of each removed symbol moves left by one device pitch. It is the
+    undo for an ``add_component(..., shift_following=True)`` insert, which
+    would otherwise leave the row one device wider than it started.
     """
     proj = _project(app)
     if component_id is not None:
@@ -828,6 +836,7 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
     row = _component_row(comp, None)
     cid = row["id"]
     symbols_removed: list[dict] = []
+    gaps_closed: list[dict] = []
     swept_all = False
     rc = _rc(comp.remove())
     if rc == 35:
@@ -875,17 +884,36 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
                          "symbol_id": _u(sym.getID()),
                          "skipped": "folio open in the GUI and would not close"})
                 continue
+            # Measure the rail BEFORE removing: once the symbol is gone its
+            # group may have no neighbour left to measure the pitch from.
+            gap_jobs = []
+            if close_gap:
+                for sym in victims:
+                    sx = float(_u(sym.getXPosition()))
+                    sy = _u(sym.getYPosition())
+                    pitch = _group_pitch(app, client, fid,
+                                         _u(sym.getEwSymbolName()), sy)
+                    if pitch > 0:
+                        gap_jobs.append((sx, sy, pitch))
             for sym in victims:
                 symbols_removed.append({"file_id": fid, "page": _u(f.getTag()),
                                         "symbol_id": _u(sym.getID()),
                                         "rc": _rc(sym.remove())})
+            for sx, sy, pitch in sorted(gap_jobs):
+                for cx, cand in _row_symbols_right_of(app, client, fid, sy, sx):
+                    cand.setXPosition(cx - pitch)
+                    cand.update()
+                    gaps_closed.append({"file_id": fid,
+                                        "symbol_id": _u(cand.getID()),
+                                        "from_x": cx, "to_x": cx - pitch})
             if was_open:
                 f.open()
         rc = _rc(comp.remove())
     skipped = [r for r in symbols_removed if r.get("skipped")]
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc), "symbols_removed": symbols_removed,
-            "symbols_skipped": skipped, "swept_all_folios": swept_all}
+            "symbols_skipped": skipped, "gaps_closed": gaps_closed,
+            "swept_all_folios": swept_all}
 
 
 # --------------------------------------------------------------------------
@@ -990,6 +1018,50 @@ def _root_in_use_for_part(app: Any, client: Any, manufacturer: str,
     return best, roots[best][:5]
 
 
+def _group_pitch(app: Any, client: Any, file_id: int, symbol_name: str,
+                 y0: float, fallback: float = 0.0) -> float:
+    """Centre-to-centre spacing of the devices of one kind on a rail.
+
+    A cabinet footprint reports getWidth 0, so the only reliable measure of
+    how much rail a device occupies is the spacing between its neighbours of
+    the same library symbol on the same row.
+    """
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    xs = []
+    for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
+        if _u(s.getEwSymbolName()) != symbol_name:
+            continue
+        y = _u(s.getYPosition())
+        if isinstance(y, (int, float)) and abs(y - y0) < 0.5:
+            xs.append(float(_u(s.getXPosition())))
+    xs.sort()
+    gaps = [b - a for a, b in zip(xs, xs[1:]) if b - a > 0.01]
+    return min(gaps) if gaps else fallback
+
+
+def _row_symbols_right_of(app: Any, client: Any, file_id: int, y0: float,
+                          x_from: float) -> list:
+    """Every symbol on the row at ``y0`` sitting strictly right of ``x_from``.
+
+    Everything to the right has to move when a device is inserted into a
+    rail, whatever kind of symbol it is, because the devices are physically
+    adjacent.
+    """
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    out = []
+    for s in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id))):
+        y = _u(s.getYPosition())
+        if not isinstance(y, (int, float)) or abs(y - y0) >= 0.5:
+            continue
+        x = float(_u(s.getXPosition()))
+        if x > x_from + 0.001:
+            out.append((x, s))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
 def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                   reference: str, description: str | None = None,
                   location_tag: str | None = None,
@@ -998,6 +1070,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                   page: str | int | None = None, file_id: int | None = None,
                   x: float | None = None, y: float | None = None,
                   after_tag: str | None = None,
+                  shift_following: bool = False,
                   symbol_name: str | None = None,
                   dry_run: bool = True) -> dict:
     """Create a component from scratch and give it a manufacturer part.
@@ -1006,6 +1079,11 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     from the manufacturer part's own library symbol, and the placement comes
     from ``x``/``y`` or from ``after_tag`` (place in the next free slot after
     that component's symbol on the page).
+
+    With ``shift_following`` the device is INSERTED into the rail directly
+    after ``after_tag`` instead of appended: everything further right on that
+    row is pushed along by one device pitch to open the slot. Use it when the
+    neighbours are adjacent and there is no free space between them.
 
     The manufacturer part must already be in the project catalogue;
     ``assignManufacturerPart`` answers EW_BAD_INPUTS (2) otherwise. If other
@@ -1057,6 +1135,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     ref_symbol = None
     after_id = None
     sym_type = None
+    shift_plan: list[dict] = []
     if page is not None or file_id is not None:
         f = find_folio(app, client, page=page, file_id=file_id)
         folio_row = _folio_row(f)
@@ -1086,7 +1165,28 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                 "Pass symbol_name explicitly.")
         if ref_symbol is not None:
             sym_type = ref_symbol["symbol_type_code"]
-        if x is None or y is None:
+        if shift_following:
+            if ref_symbol is None or after_id is None:
+                raise ValueError(
+                    "shift_following needs after_tag naming a component whose "
+                    "symbol is on this page; the new device is inserted "
+                    "directly after it.")
+            pitch = _group_pitch(app, client, folio_row["id"],
+                                 ref_symbol["symbol_name"], ref_symbol["y"])
+            if pitch <= 0:
+                raise ValueError(
+                    f"cannot tell how much rail {reference!r} occupies: "
+                    f"{after_tag!r} has no neighbour of the same kind on its "
+                    "row to measure the pitch from. Pass x and y explicitly.")
+            y = ref_symbol["y"] if y is None else y
+            x = ref_symbol["x"] + pitch if x is None else x
+            shift_plan = [
+                {"symbol_id": _u(sym.getID()),
+                 "symbol_name": _u(sym.getEwSymbolName()),
+                 "from_x": sx, "to_x": sx + pitch}
+                for sx, sym in _row_symbols_right_of(
+                    app, client, folio_row["id"], y, ref_symbol["x"])]
+        elif x is None or y is None:
             if ref_symbol is None:
                 raise ValueError(
                     "no x/y given and nothing on the page to place after: "
@@ -1099,6 +1199,10 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                 x = ref_symbol["x"] + off
 
     warnings: list[str] = []
+    if shift_following and folio_row is not None and not shift_plan:
+        warnings.append(
+            f"nothing sits right of {after_tag!r} on that row, so no shift "
+            "was needed; the device is simply appended")
     if folio_row is not None and ref_symbol is None:
         warnings.append(
             "no existing symbol of this kind on the page, so the new one is "
@@ -1118,6 +1222,11 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
             "scale_taken_from": (ref_symbol or {}).get("symbol_id"),
         }),
         "tag_root_in_use_for_part": part_root,
+        "shift_following": bool(shift_following),
+        "pitch": (shift_plan and
+                  round(shift_plan[0]["to_x"] - shift_plan[0]["from_x"], 6)
+                  or None),
+        "symbols_to_shift": shift_plan,
         "warnings": warnings,
     }
     if dry_run:
@@ -1160,6 +1269,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
 
     # 6. the symbol
     placed = None
+    shifted: list[dict] = []
     if folio_row is not None:
         f = find_folio(app, client, file_id=folio_row["id"])
         reopened = False
@@ -1178,6 +1288,33 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                     "undo": f"delete_component(component_id={new_id})",
                 }
             reopened = True
+        # Open the slot first, while the folio is closed, so the row never
+        # renders with two devices on top of each other.
+        shifted: list[dict] = []
+        if shift_plan:
+            pitch = plan["pitch"] or 0.0
+            # Move the rightmost first so no intermediate position collides
+            # with a device that has not moved yet.
+            for mv in sorted(shift_plan, key=lambda m: m["from_x"],
+                             reverse=True):
+                target = None
+                for sx, cand in _row_symbols_right_of(
+                        app, client, folio_row["id"], plan["symbol"]["y"],
+                        ref_symbol["x"]):
+                    if _u(cand.getID()) == mv["symbol_id"]:
+                        target = cand
+                        break
+                if target is None:
+                    shifted.append({**mv, "error": "symbol vanished"})
+                    continue
+                rc_set = _rc(target.setXPosition(mv["to_x"]))
+                rc_upd = _rc(target.update())
+                shifted.append({**mv, "set_rc": rc_set, "update_rc": rc_upd})
+            steps.append({"step": f"shift {len(shifted)} symbols by {pitch}",
+                          "rc": 0 if all(m.get("set_rc") in (0, None)
+                                         and m.get("update_rc") in (0, None)
+                                         for m in shifted) else 1,
+                          "rc_name": "n/a"})
         sym = _u(f.newEwProjectSymbolFromSymbolType(sym_type))
         if sym is None:
             steps.append({"step": "newEwProjectSymbolFromSymbolType",
@@ -1210,6 +1347,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     return {
         "ok": not errors and new_row["tag"] == new_bare,
         "dry_run": False, "new_component": new_row, "symbol_placed": placed,
+        "symbols_shifted": (shifted if folio_row is not None else []),
         "plan": plan, "steps": steps, "errors": errors, "warnings": warnings,
         "folio_was_open": bool(folio_row and folio_row["is_open"]),
         "undo": f"delete_component(component_id={new_id})",
