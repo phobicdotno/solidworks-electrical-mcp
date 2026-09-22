@@ -535,6 +535,43 @@ def close_and_reopen_folio(app: Any, client: Any, page: str | int | None = None,
 # Write-side: clone / delete a component
 
 
+def _split_mark(mark: str) -> tuple:
+    """Split a device mark into (root, number, suffix): "K29B" -> ("K", 29,
+    "B"), "K38" -> ("K", 38, ""), "K" -> ("K", None, "")."""
+    # The letters are optional: a folder tag is a bare number ("7"), and its
+    # root is empty rather than the digits.
+    m = re.match(r"^([A-Za-z]*)(\d+)?(.*)$", mark.strip().lstrip("-"))
+    if not m:
+        return mark, None, ""
+    root, num, suffix = m.group(1), m.group(2), m.group(3) or ""
+    if not root and num is None:
+        return mark, None, ""
+    return root, (int(num) if num is not None else None), suffix
+
+
+def _set_mark(comp: Any, mark: str) -> dict:
+    """Set a component's mark AND the tag root/number behind it.
+
+    setTag only writes the mark that is displayed. SOLIDWORKS keeps the
+    device class in a separate TagRoot, with TagNumber, and drives its own
+    automatic renumbering from those. A component created through the API and
+    then given a mark keeps whatever root it was born with, so it can read as
+    "K38" on every drawing while being filed as J12 underneath, and a GUI
+    renumber would then move it out of the K series. Keep all three in step.
+    """
+    root, number, _suffix = _split_mark(mark)
+    out = {"setTag": _rc(comp.setTag(mark)),
+           "setTagRoot": _rc(comp.setTagRoot(root))}
+    if number is not None:
+        out["setTagNumber"] = _rc(comp.setTagNumber(number))
+    out["update"] = _rc(comp.update())
+    # setTagRoot/setTagNumber can rewrite the displayed mark; put it back.
+    if str(_u(comp.getTag())) != mark:
+        out["setTag(restore)"] = _rc(comp.setTag(mark))
+        out["update2"] = _rc(comp.update())
+    return out
+
+
 def _find_one_component(app: Any, client: Any, tag: str) -> Any:
     """The IEwProjectComponentX for an unambiguous tag / tag path."""
     proj = _project(app)
@@ -707,7 +744,7 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
     mgr = _u(proj.getEwProjectComponentManager())
     new = _u(mgr.newEwProjectComponent())
     step("insert", new.insert)
-    step("setTag", lambda: new.setTag(new_bare))
+    step("setTag+root+number", lambda: _set_mark(new, new_bare))
     desc = _text(src, "getDescription", LANG)
     if desc:
         step("setDescription", lambda: new.setDescription(LANG, desc))
@@ -1247,7 +1284,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     mgr = _u(proj.getEwProjectComponentManager())
     new = _u(mgr.newEwProjectComponent())
     step("insert", new.insert)
-    step("setTag", lambda: new.setTag(new_bare))
+    step("setTag+root+number", lambda: _set_mark(new, new_bare))
     if description:
         step("setDescription", lambda: new.setDescription(LANG, description))
     if isinstance(location_id, int) and location_id > 0:
@@ -1364,6 +1401,10 @@ def _tag_pattern(tag: str):
 
 
 def _text_references(app: Any, client: Any, tag: str) -> list:
+    return _text_references_multi(app, client, [tag])
+
+
+def _text_references_multi(app: Any, client: Any, tags: list) -> list:
     """Every place the mark appears as literal TEXT rather than as a link.
 
     Symbols point at a component by id, so they re-render after a rename on
@@ -1371,22 +1412,32 @@ def _text_references(app: Any, client: Any, tag: str) -> list:
     typed, a free text on a drawing) does not, and is what actually goes
     stale. This is the list a rename has to hand back.
     """
-    pat = _tag_pattern(tag)
+    pats = [(t, _tag_pattern(t)) for t in tags]
+
+    def hit(text: str):
+        for t, p in pats:
+            if p.search(text):
+                return t
+        return None
+
     proj = _project(app)
     hits: list[dict] = []
 
     for c in _each(client, _u(_u(proj.getEwProjectComponentManager())
                               .getEwProjectComponentArray())):
         d = str(_u(c.getDescription(LANG)) or "")
-        if pat.search(d):
-            hits.append({"kind": "component description",
+        m = hit(d)
+        if m:
+            hits.append({"kind": "component description", "mark": m,
                          "id": _u(c.getID()), "tag": _u(c.getTag()),
                          "text": d})
     for cb in _each(client, _u(_u(proj.getEwProjectCableManager())
                                .getEwProjectCableArray())):
         d = str(_u(cb.getDescription(LANG)) or "")
-        if pat.search(d):
-            hits.append({"kind": "cable description", "id": _u(cb.getID()),
+        m = hit(d)
+        if m:
+            hits.append({"kind": "cable description", "mark": m,
+                         "id": _u(cb.getID()),
                          "tag": _u(cb.getTag()), "text": d})
 
     file_mgr = _u(proj.getEwProjectFileManager())
@@ -1395,8 +1446,9 @@ def _text_references(app: Any, client: Any, tag: str) -> list:
         fid = _u(f.getID())
         page = _u(f.getTag())
         d = str(_u(f.getDescription(LANG)) or "")
-        if pat.search(d):
-            hits.append({"kind": "folio description", "id": fid,
+        m = hit(d)
+        if m:
+            hits.append({"kind": "folio description", "mark": m, "id": fid,
                          "page": page, "text": d})
         for sym in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
             try:
@@ -1408,8 +1460,10 @@ def _text_references(app: Any, client: Any, tag: str) -> list:
                     tx = str(_u(sym.getTranslatableTextAt(i)) or "")
                 except Exception:  # noqa: BLE001
                     continue
-                if pat.search(tx):
-                    hits.append({"kind": "symbol text", "page": page,
+                m = hit(tx)
+                if m:
+                    hits.append({"kind": "symbol text", "mark": m,
+                                 "page": page,
                                  "id": _u(sym.getID()), "index": i,
                                  "text": tx})
     return hits
@@ -1501,8 +1555,7 @@ def rename_component(app: Any, client: Any, tag: str, new_tag: str,
         steps.append({"step": name, "rc": _rc(r), "rc_name": _rc_name(_rc(r))})
         return r
 
-    step("setTag", lambda: src.setTag(new_bare))
-    step("update", src.update)
+    step("setTag+root+number", lambda: _set_mark(src, new_bare))
     now = str(_u(src.getTag()))
 
     # Re-render every page that draws it, so the sheets show the new mark.
@@ -1532,3 +1585,472 @@ def rename_component(app: Any, client: Any, tag: str, new_tag: str,
         "steps": steps, "errors": errors,
         "undo": f"rename_component(tag={new_bare!r}, new_tag={old_bare!r})",
     }
+
+
+def renumber_components(app: Any, client: Any, renames: list,
+                        scan_text: bool = True, refresh_folios: bool = True,
+                        dry_run: bool = True) -> dict:
+    """Retag a run of devices in one pass, collision-safe.
+
+    ``renames`` is a list of ``[old_mark, new_mark]`` pairs. Renaming a run
+    one device at a time is not safe in general: as soon as the old and new
+    sets overlap (K31..K38 becoming K30..K37, say) an intermediate step
+    collides with a mark that is still in use. Every target is checked first,
+    and when the sets overlap the devices are parked on temporary marks and
+    then moved into place, so no two components ever hold the same mark.
+
+    The text scan that ``rename_component`` runs per device runs ONCE here
+    for every old mark together, which is what makes a run affordable.
+    """
+    proj = _project(app)
+    pairs = [(str(o).strip().lstrip("-"), str(n).strip().lstrip("-"))
+             for o, n in renames]
+    if not pairs:
+        raise ValueError("no renames given")
+
+    resolved = []
+    for old, new in pairs:
+        comp = _find_one_component(app, client, old)
+        root = (str(_u(comp.getTagRoot()) or "").strip()
+                or _tag_root(str(_u(comp.getTag()))))
+        new_root = _tag_root(new)
+        if new_root.casefold() != root.casefold():
+            raise ValueError(
+                f"tag root must stay {root!r} when renaming {old!r} (got "
+                f"{new!r}, root {new_root!r}). MR rule: a device keeps its "
+                "class; relays are always rooted K.")
+        if new_root != root:
+            new = root + new[len(new_root):]
+        resolved.append({"old": old, "new": new, "root": root,
+                         "id": _u(comp.getID()), "component": comp})
+
+    sources = {r["old"] for r in resolved}
+    targets = [r["new"] for r in resolved]
+    dupes = sorted({t for t in targets if targets.count(t) > 1})
+    if dupes:
+        raise ValueError(f"the same target mark is used more than once: {dupes}")
+
+    # every existing mark, so a target cannot land on a device we are not moving
+    taken = set()
+    for c in _each(client, _u(_u(proj.getEwProjectComponentManager())
+                              .getEwProjectComponentArray())):
+        taken.add(str(_u(c.getTag())))
+    clashes = sorted(t for t in targets if t in taken and t not in sources)
+    if clashes:
+        raise ValueError(
+            f"these target marks already belong to devices that are not part "
+            f"of this renumber: {clashes}")
+
+    overlap = sorted(set(targets) & sources)
+    temps: dict[str, str] = {}
+    if overlap:
+        n = 9900
+        for r in resolved:
+            while True:
+                cand = f"{r['root']}{n}"
+                n += 1
+                if cand not in taken and cand not in temps.values():
+                    break
+            temps[r["old"]] = cand
+
+    text_refs = (_text_references_multi(app, client, sorted(sources))
+                 if scan_text else None)
+    bound = {r["old"]: _symbols_bound_to(app, client, r["id"])
+             for r in resolved}
+
+    plan = {
+        "renames": [{"old": r["old"], "new": r["new"], "id": r["id"],
+                     "symbols_following": len(bound[r["old"]]),
+                     "pages": sorted({b["page"] for b in bound[r["old"]]})}
+                    for r in resolved],
+        "needs_temp_marks": bool(overlap),
+        "temp_marks": temps or None,
+        "text_references": text_refs,
+        "note": ("symbols and cross-references are linked by component id and "
+                 "follow the rename; any text_references spell an old mark "
+                 "out and must be judged by hand"),
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    steps: list[dict] = []
+
+    def retag(comp: Any, mark: str, label: str) -> None:
+        try:
+            rcs = _set_mark(comp, mark)
+            bad = [k for k, v in rcs.items() if v not in (0, None)]
+            steps.append({"step": label, "rc": 0 if not bad else 1,
+                          "rc_name": "n/a" if not bad else f"failed: {bad}",
+                          "detail": rcs})
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"step": label, "error": f"{type(exc).__name__}: {exc}"})
+
+    if temps:
+        for r in resolved:
+            retag(r["component"], temps[r["old"]],
+                  f"{r['old']} -> {temps[r['old']]} (temp)")
+    for r in resolved:
+        retag(r["component"], r["new"], f"{r['old']} -> {r['new']}")
+
+    results = [{"old": r["old"], "new": r["new"], "id": r["id"],
+                "now": str(_u(r["component"].getTag()))} for r in resolved]
+    wrong = [x for x in results if x["now"] != x["new"]]
+
+    refreshed = []
+    if refresh_folios and not wrong:
+        fids = sorted({b["file_id"] for bs in bound.values() for b in bs})
+        for fid in fids:
+            f = find_folio(app, client, file_id=fid)
+            if bool(_u(f.isOpen())):
+                rc_c = _rc(f.close())
+                rc_o = _rc(f.open())
+                refreshed.append({"file_id": fid, "page": _u(f.getTag()),
+                                  "close_rc": rc_c, "open_rc": rc_o})
+            else:
+                refreshed.append({"file_id": fid, "page": _u(f.getTag()),
+                                  "was_open": False})
+
+    errors = [st for st in steps
+              if st.get("error") or st.get("rc") not in (0, None)]
+    return {
+        "ok": not errors and not wrong,
+        "dry_run": False, "results": results, "mismatched": wrong,
+        "used_temp_marks": bool(temps), "folios_refreshed": refreshed,
+        "text_references": text_refs, "steps": steps, "errors": errors,
+        "undo": "renumber_components with the pairs reversed",
+    }
+
+
+def audit_tag_roots(app: Any, client: Any, tag_contains: str | None = None,
+                    fix: bool = False) -> dict:
+    """Find components whose stored TagRoot/TagNumber disagree with the mark.
+
+    The mark is what every drawing shows; TagRoot and TagNumber are what
+    SOLIDWORKS renumbers from. When they disagree a device reads correctly on
+    every sheet yet is filed under another class, and a GUI renumber can move
+    it out of its series. ``fix`` writes the root and number implied by the
+    mark, leaving the mark itself untouched.
+    """
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectComponentManager())
+    needle = (tag_contains or "").lower()
+    drift = []
+    for c in _each(client, _u(mgr.getEwProjectComponentArray())):
+        mark = str(_u(c.getTag()))
+        if needle and needle not in mark.lower():
+            continue
+        root, number, _sfx = _split_mark(mark)
+        cur_root = str(_u(c.getTagRoot()) or "")
+        cur_num = _u(c.getTagNumber())
+        root_bad = cur_root != root
+        num_bad = number is not None and cur_num != number
+        if not (root_bad or num_bad):
+            continue
+        row = {"id": _u(c.getID()), "tag": mark, "tag_path": _u(c.getTagPath()),
+               "stored_root": cur_root, "expected_root": root,
+               "stored_number": cur_num, "expected_number": number,
+               "root_mismatch": root_bad, "number_mismatch": num_bad}
+        if fix:
+            row["applied"] = _set_mark(c, mark)
+            row["now_root"] = str(_u(c.getTagRoot()) or "")
+            row["now_number"] = _u(c.getTagNumber())
+            row["now_tag"] = str(_u(c.getTag()))
+        drift.append(row)
+    return {"count": len(drift), "fixed": bool(fix), "components": drift}
+
+
+# --------------------------------------------------------------------------
+# Write-side: the document tree (folders)
+
+
+def _folder_row(f: Any) -> dict:
+    return {
+        "id": _u(f.getID()),
+        "tag": _u(f.getTag()),
+        "description": _text(f, "getDescription", LANG),
+        "book_id": _u(f.getEwProjectBookID()),
+        "parent_folder_id": _u(f.getEwProjectFolderID()),
+        "position": _u(f.getPosition()),
+        "tag_root": _u(f.getTagRoot()),
+        "tag_number": _u(f.getTagNumber()),
+    }
+
+
+def _find_folder(app: Any, client: Any, tag: str | None = None,
+                 folder_id: int | None = None, book_id: int | None = None,
+                 description: str | None = None) -> Any:
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectFolderManager())
+    if folder_id is not None:
+        f = _u(mgr.findEwProjectFolderByID(int(folder_id)))
+        if f is None:
+            raise LookupError(f"no folder with id {folder_id}")
+        return f
+    hits = []
+    for f in _each(client, _u(mgr.getEwProjectFolderArray())):
+        if book_id is not None and _u(f.getEwProjectBookID()) != book_id:
+            continue
+        if tag is not None and str(_u(f.getTag())) != str(tag):
+            continue
+        if description is not None and str(
+                _u(f.getDescription(LANG)) or "") != description:
+            continue
+        hits.append(f)
+    if not hits:
+        raise LookupError(
+            f"no folder matching tag={tag!r} description={description!r} "
+            f"book_id={book_id}")
+    if len(hits) > 1:
+        raise LookupError(
+            f"several folders match tag={tag!r} book_id={book_id}: "
+            f"{[_folder_row(h) for h in hits]}; give folder_id")
+    return hits[0]
+
+
+def rename_folder(app: Any, client: Any, tag: str | None = None,
+                  folder_id: int | None = None, book_id: int | None = None,
+                  new_tag: str | None = None,
+                  new_description: str | None = None,
+                  dry_run: bool = True) -> dict:
+    """Retag or re-describe a folder in the document tree.
+
+    The tree shows "<tag> - <description>", so renaming "7 - Reports" to
+    "8 - Reports" is a change of tag alone. Folder tags must be unique within
+    their book, so the target is checked before anything is written.
+    """
+    f = _find_folder(app, client, tag=tag, folder_id=folder_id,
+                     book_id=book_id)
+    before = _folder_row(f)
+    if new_tag is None and new_description is None:
+        raise ValueError("give new_tag and/or new_description")
+    if new_tag is not None and str(new_tag) != str(before["tag"]):
+        try:
+            clash = _find_folder(app, client, tag=str(new_tag),
+                                 book_id=before["book_id"])
+        except LookupError:
+            clash = None
+        if clash is not None:
+            raise ValueError(
+                f"book {before['book_id']} already has a folder tagged "
+                f"{new_tag!r}: {_folder_row(clash)}")
+    plan = {"folder": before, "new_tag": new_tag,
+            "new_description": new_description}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    steps = {}
+    if new_tag is not None:
+        root, number, _sfx = _split_mark(str(new_tag))
+        steps["setTag"] = _rc(f.setTag(str(new_tag)))
+        if root:
+            steps["setTagRoot"] = _rc(f.setTagRoot(root))
+        if number is not None:
+            steps["setTagNumber"] = _rc(f.setTagNumber(number))
+    if new_description is not None:
+        steps["setDescription"] = _rc(f.setDescription(LANG, new_description))
+    steps["update"] = _rc(f.update())
+    after = _folder_row(f)
+    ok = ((new_tag is None or str(after["tag"]) == str(new_tag))
+          and (new_description is None
+               or after["description"] == new_description))
+    return {"ok": ok, "dry_run": False, "before": before, "after": after,
+            "steps": steps,
+            "undo": (f"rename_folder(folder_id={before['id']}, "
+                     f"new_tag={before['tag']!r})")}
+
+
+def add_folder(app: Any, client: Any, tag: str, description: str,
+               book_id: int | None = None, book_tag: str | None = None,
+               parent_folder_id: int | None = None,
+               position: int | None = None, after_tag: str | None = None,
+               dry_run: bool = True) -> dict:
+    """Create a folder in the document tree.
+
+    ``position`` is the internal sort index that drives the order shown in
+    the tree; it is NOT the tag. Give ``after_tag`` instead to slot the new
+    folder directly behind an existing one, which is usually what is meant.
+    """
+    proj = _project(app)
+    if book_id is None:
+        bmgr = _u(proj.getEwProjectBookManager())
+        books = list(_each(client, _u(bmgr.getEwProjectBookArray())))
+        if book_tag is not None:
+            hits = [b for b in books if str(_u(b.getTag())) == str(book_tag)]
+            if len(hits) != 1:
+                raise LookupError(
+                    f"book tag {book_tag!r} matched {len(hits)} books")
+            book_id = _u(hits[0].getID())
+        elif len(books) == 1:
+            book_id = _u(books[0].getID())
+        else:
+            raise ValueError(
+                "several books in this project: give book_id or book_tag "
+                f"({[{'id': _u(b.getID()), 'tag': _u(b.getTag())} for b in books]})")
+    try:
+        clash = _find_folder(app, client, tag=str(tag), book_id=book_id)
+    except LookupError:
+        clash = None
+    if clash is not None:
+        raise ValueError(
+            f"book {book_id} already has a folder tagged {tag!r}: "
+            f"{_folder_row(clash)}")
+
+    siblings = []
+    mgr = _u(proj.getEwProjectFolderManager())
+    for f in _each(client, _u(mgr.getEwProjectFolderArray())):
+        if _u(f.getEwProjectBookID()) == book_id:
+            siblings.append(_folder_row(f))
+    siblings.sort(key=lambda r: (r["position"]
+                                 if isinstance(r["position"], int) else 0))
+    if position is None and after_tag is not None:
+        prev = [r for r in siblings if str(r["tag"]) == str(after_tag)]
+        if not prev:
+            raise LookupError(
+                f"no folder tagged {after_tag!r} in book {book_id}")
+        position = (prev[0]["position"] or 0) + 1
+    plan = {"book_id": book_id, "tag": tag, "description": description,
+            "parent_folder_id": parent_folder_id, "position": position,
+            "siblings": siblings}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    new = _u(mgr.newEwProjectFolder())
+    steps = {}
+    # The book (and parent) must be set BEFORE insert, as for a folio:
+    # setting them afterwards leaves the object orphaned in the tree.
+    steps["setEwProjectBookID"] = _rc(new.setEwProjectBookID(book_id))
+    if parent_folder_id is not None:
+        steps["setEwProjectFolderID"] = _rc(
+            new.setEwProjectFolderID(parent_folder_id))
+    steps["insert"] = _rc(new.insert())
+    root, number, _sfx = _split_mark(str(tag))
+    steps["setTag"] = _rc(new.setTag(str(tag)))
+    if root:
+        steps["setTagRoot"] = _rc(new.setTagRoot(root))
+    if number is not None:
+        steps["setTagNumber"] = _rc(new.setTagNumber(number))
+    steps["setDescription"] = _rc(new.setDescription(LANG, description))
+    if position is not None:
+        steps["setPosition"] = _rc(new.setPosition(int(position)))
+    steps["update"] = _rc(new.update())
+    row = _folder_row(new)
+    ok = (str(row["tag"]) == str(tag) and row["description"] == description
+          and row["book_id"] == book_id)
+    return {"ok": ok, "dry_run": False, "folder": row, "steps": steps,
+            "undo": f"delete_folder(folder_id={row['id']})"}
+
+
+def delete_folder(app: Any, client: Any, folder_id: int) -> dict:
+    """Remove an empty folder from the document tree."""
+    f = _find_folder(app, client, folder_id=folder_id)
+    row = _folder_row(f)
+    proj = _project(app)
+    fmgr = _u(proj.getEwProjectFileManager())
+    inside = [_u(x.getTag()) for x in _each(client, _u(fmgr.getEwProjectFileArray()))
+              if _u(x.getEwProjectFolderID()) == folder_id]
+    if inside:
+        raise ValueError(
+            f"folder {row['tag']!r} still holds {len(inside)} folios "
+            f"({inside[:10]}); move them out first")
+    rc = _rc(f.remove())
+    return {"ok": rc in (0, None), "removed": row, "rc": rc,
+            "rc_name": _rc_name(rc)}
+
+
+# --------------------------------------------------------------------------
+# Write-side: pages (folios)
+
+FILE_TYPE_CODES = {v: k for k, v in FILE_TYPE_NAMES.items()}
+
+
+def add_folio(app: Any, client: Any, description: str,
+              file_type: str = "folio", folder_id: int | None = None,
+              book_id: int | None = None, location_id: int | None = None,
+              page_number: int | None = None, insert_before_page: int | None = None,
+              dry_run: bool = True) -> dict:
+    """Create a page and, optionally, slot it in at a given page number.
+
+    ``file_type`` is a name from FILE_TYPE_NAMES, e.g. "2d_cabinet_layout"
+    or "mixed_scheme". ``insert_before_page`` takes the number the new page
+    should end up with and pushes every page from there on one number down,
+    which is what "insert a sheet here" means; the cascade is the same
+    collision-safe one ``shift_folio_numbers`` uses.
+
+    File type, book and folder MUST be set before insert: setting them after
+    leaves the page in folder -1, invisible in the tree.
+    """
+    proj = _project(app)
+    code = FILE_TYPE_CODES.get(file_type)
+    if code is None:
+        raise ValueError(
+            f"unknown file_type {file_type!r}; known: "
+            f"{sorted(FILE_TYPE_CODES)}")
+    if folder_id is not None and book_id is None:
+        f = _find_folder(app, client, folder_id=folder_id)
+        book_id = _u(f.getEwProjectBookID())
+    if book_id is None:
+        raise ValueError("give book_id or folder_id")
+
+    existing = list_folios(app, client)["folios"]
+    taken = {r["page_number"] for r in existing
+             if isinstance(r["page_number"], int)}
+    target = page_number if page_number is not None else insert_before_page
+    plan = {"description": description, "file_type": file_type,
+            "file_type_code": code, "book_id": book_id,
+            "folder_id": folder_id, "location_id": location_id,
+            "target_page_number": target,
+            "cascade": (None if insert_before_page is None else {
+                "threshold": insert_before_page, "delta": 1,
+                "pages_moved": sorted(n for n in taken
+                                      if n >= insert_before_page)}),
+            "page_number_free": target not in taken if target else None}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    mgr = _u(proj.getEwProjectFileManager())
+    new = _u(mgr.newProjectFile())
+    steps: dict[str, Any] = {}
+    steps["setFileType"] = _rc(new.setFileType(code))
+    steps["setEwProjectBookID"] = _rc(new.setEwProjectBookID(book_id))
+    if folder_id is not None:
+        steps["setEwProjectFolderID"] = _rc(new.setEwProjectFolderID(folder_id))
+    steps["insert"] = _rc(new.insert())
+    steps["setDescription"] = _rc(new.setDescription(LANG, description))
+    if location_id is not None:
+        steps["setLocationID"] = _rc(new.setLocationID(location_id, False))
+    steps["update"] = _rc(new.update())
+    new_id = _u(new.getID())
+
+    cascade = None
+    if insert_before_page is not None:
+        from .com import app as _app_singleton
+        cascade = _app_singleton()._shift_folio_numbers_locked(
+            insert_before_page, 1, new_id, insert_before_page, False,
+            "application")
+    elif page_number is not None:
+        steps["setTagNumber"] = _rc(new.setTagNumber(int(page_number)))
+        steps["update2"] = _rc(new.update())
+
+    row = _folio_row(new)
+    return {"ok": row["id"] == new_id and row["folder_id"] == (
+                folder_id if folder_id is not None else row["folder_id"]),
+            "dry_run": False, "folio": row, "steps": steps,
+            "cascade": cascade, "plan": plan,
+            "undo": f"delete_folio(file_id={new_id})"}
+
+
+def delete_folio(app: Any, client: Any, file_id: int) -> dict:
+    """Remove a page. Refuses while it still carries symbols."""
+    f = find_folio(app, client, file_id=file_id)
+    row = _folio_row(f)
+    proj = _project(app)
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    syms = [_u(s.getID()) for s in
+            _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(file_id)))]
+    if syms:
+        raise ValueError(
+            f"page {row['page']!r} still carries {len(syms)} symbols; remove "
+            "them first")
+    rc = _rc(f.remove())
+    return {"ok": rc in (0, None), "removed": row, "rc": rc,
+            "rc_name": _rc_name(rc)}

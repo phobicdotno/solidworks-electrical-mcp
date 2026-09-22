@@ -36,6 +36,9 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     find_component, list_cables, folio_symbols, export_folio_pdf,
     regenerate_title_blocks, rename_project, close_and_reopen_folio,
     add_component, clone_component, rename_component,
+    renumber_components, audit_tag_roots,
+    add_folder, rename_folder, delete_folder,
+    add_folio, delete_folio,
     delete_component.
 """
 
@@ -66,6 +69,7 @@ mcp = FastMCP(
         "SEE the page) · regenerate_title_blocks · rename_project · "
         "close_and_reopen_folio · add_component (build one from scratch) "
         "· rename_component (retag; lists what follows and what does not) "
+        "· renumber_components (retag a whole run, collision-safe) "
         "· clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
         "cached COM state after "
@@ -847,6 +851,104 @@ def rename_component(tag: str, new_tag: str, scan_text: bool = True,
     return _run(wf.rename_component, tag=tag, new_tag=new_tag,
                 scan_text=scan_text, refresh_folios=refresh_folios,
                 dry_run=dry_run)
+
+
+@mcp.tool
+def renumber_components(renames: list, scan_text: bool = True,
+                        refresh_folios: bool = True,
+                        dry_run: bool = True) -> dict:
+    """Retag a run of devices in one pass: [["K31","K41"],["K32","K42"], ...].
+
+    Renaming a run one at a time is not safe once the old and new marks
+    overlap, because an intermediate step collides with a mark still in use.
+    Every target is validated first, and overlapping sets are parked on
+    temporary marks and then moved into place. The text scan runs once for
+    the whole run rather than once per device.
+
+    Symbols and cross-references follow by component id; literal text does
+    not and is reported. ``dry_run`` is the default.
+    """
+    return _run(wf.renumber_components, renames=renames, scan_text=scan_text,
+                refresh_folios=refresh_folios, dry_run=dry_run)
+
+
+@mcp.tool
+def audit_tag_roots(tag_contains: str | None = None,
+                    fix: bool = False) -> dict:
+    """Find components whose stored tag root/number disagree with their mark.
+
+    The mark is what the drawings show; SOLIDWORKS renumbers from the
+    separate TagRoot and TagNumber. When they disagree a device reads
+    correctly on every sheet while being filed under another class, and a GUI
+    renumber can move it out of its series. ``fix`` writes the root and
+    number implied by the mark and leaves the mark itself alone.
+    """
+    return _run(wf.audit_tag_roots, tag_contains=tag_contains, fix=fix)
+
+
+@mcp.tool
+def rename_folder(tag: str | None = None, folder_id: int | None = None,
+                  book_id: int | None = None, new_tag: str | None = None,
+                  new_description: str | None = None,
+                  dry_run: bool = True) -> dict:
+    """Retag or re-describe a folder in the document tree.
+
+    The tree shows "<tag> - <description>", so renaming "7 - Reports" to
+    "8 - Reports" changes the tag alone. Folder tags are unique within a
+    book, so the target is checked before anything is written.
+    """
+    return _run(wf.rename_folder, tag=tag, folder_id=folder_id,
+                book_id=book_id, new_tag=new_tag,
+                new_description=new_description, dry_run=dry_run)
+
+
+@mcp.tool
+def add_folder(tag: str, description: str, book_id: int | None = None,
+               book_tag: str | None = None,
+               parent_folder_id: int | None = None,
+               position: int | None = None, after_tag: str | None = None,
+               dry_run: bool = True) -> dict:
+    """Create a folder in the document tree, e.g. "7 - CC100 Enclosure".
+
+    Give ``after_tag`` to slot it directly behind an existing folder; the
+    tree order is driven by an internal position index, not by the tag.
+    """
+    return _run(wf.add_folder, tag=tag, description=description,
+                book_id=book_id, book_tag=book_tag,
+                parent_folder_id=parent_folder_id, position=position,
+                after_tag=after_tag, dry_run=dry_run)
+
+
+@mcp.tool
+def delete_folder(folder_id: int) -> dict:
+    """Remove an empty folder. Refuses while it still holds folios."""
+    return _run(wf.delete_folder, folder_id=folder_id)
+
+
+@mcp.tool
+def add_folio(description: str, file_type: str = "folio",
+              folder_id: int | None = None, book_id: int | None = None,
+              location_id: int | None = None,
+              page_number: int | None = None,
+              insert_before_page: int | None = None,
+              dry_run: bool = True) -> dict:
+    """Create a page, optionally slotting it in at a given page number.
+
+    ``file_type`` is a name such as "2d_cabinet_layout", "mixed_scheme" or
+    "line_diagram". ``insert_before_page`` gives the new page that number and
+    pushes every page from there on one number down, using the same
+    collision-safe cascade as shift_folio_numbers.
+    """
+    return _run(wf.add_folio, description=description, file_type=file_type,
+                folder_id=folder_id, book_id=book_id,
+                location_id=location_id, page_number=page_number,
+                insert_before_page=insert_before_page, dry_run=dry_run)
+
+
+@mcp.tool
+def delete_folio(file_id: int) -> dict:
+    """Remove a page. Refuses while it still carries symbols."""
+    return _run(wf.delete_folio, file_id=file_id)
 
 
 def _isolate_stdout_from_native_pollution() -> None:
