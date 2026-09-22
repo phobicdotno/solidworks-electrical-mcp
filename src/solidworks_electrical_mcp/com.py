@@ -325,8 +325,9 @@ class ElectricalApp:
             return self._api
         api = self._fetch_api_locked()
         if api is None:
-            # Same stale-factory failure mode as the application attach.
-            self._reset_com_locked()
+            # Same stale-factory failure mode as the application attach. Only
+            # the factory is suspect here; keep a healthy application.
+            self._factory = self._api = None
             api = self._fetch_api_locked()
         if api is None:
             raise RuntimeError(

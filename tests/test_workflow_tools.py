@@ -89,6 +89,11 @@ def main() -> int:
               "list_folios: count disagrees with project_info")
         check(all(isinstance(r["id"], int) and r["page"] for r in rows),
               "list_folios: rows missing id/page")
+        books_seen = [r["book_id"] for r in rows]
+        check(books_seen == sorted(books_seen, key=books_seen.index),
+              "list_folios: books interleave; expected book-major tree order")
+        check(all(not isinstance(r["description"], dict) for r in rows),
+              "list_folios: a description came back as an error dict")
         covers = tool("list_folios", {"file_type": "cover_page"})
         print("cover pages:", [(r["page"], r["description"]) for r in
                                covers.get("folios", [])])
@@ -138,8 +143,10 @@ def main() -> int:
         cables = tool("list_cables", {"limit": 3})
         print("list_cables(3):", [(c["tag"], c["reference"]) for c in
                                   cables.get("cables", [])])
-        check(cables.get("ok") and (cables.get("count") == min(3, counts.get("cables", 0))),
-              "list_cables: count inconsistent")
+        check(cables.get("ok") and (cables.get("count") == min(3, counts.get("cables", 0)))
+              and cables.get("total_in_project") == counts.get("cables")
+              and cables.get("truncated") == (counts.get("cables", 0) > 3),
+              "list_cables: count/total/truncated inconsistent with project_info")
 
         # Walk schematic pages until one carries symbols (some are empty).
         drawn = None

@@ -93,10 +93,12 @@ def _project(app: Any) -> Any:
 
 
 def _text(obj: Any, getter: str, *args: Any) -> Any:
+    """Read a text getter; a failing getter yields None (never a dict that a
+    substring filter could accidentally match)."""
     try:
         return coerce_value(_u(getattr(obj, getter)(*args)))
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"{type(exc).__name__}: {exc}"}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -165,8 +167,11 @@ def list_folios(app: Any, client: Any, book_id: int | None = None,
         if needle and needle not in str(row["description"]).lower():
             continue
         rows.append(row)
-    rows.sort(key=lambda r: (r["position"] if isinstance(r["position"], int)
-                             else 0))
+    def _key(r: dict) -> tuple:
+        b = r["book_id"] if isinstance(r["book_id"], int) else 0
+        pos = r["position"] if isinstance(r["position"], int) else 0
+        return (b, pos, r["id"])
+    rows.sort(key=_key)
     return {"count": len(rows), "folios": rows}
 
 
@@ -183,11 +188,21 @@ def find_folio(app: Any, client: Any, page: str | int | None = None,
     if page is None:
         raise ValueError("give either page or file_id")
     want = str(page).strip()
+    exact, loose = [], []
     for f in _each(client, _u(mgr.getEwProjectFileArray())):
-        tag = _u(f.getTag())
-        if str(tag) == want or str(tag).lstrip("0") == want.lstrip("0"):
-            return f
-    raise LookupError(f"no folio with page mark {want!r}")
+        tag = str(_u(f.getTag()))
+        if tag == want:
+            exact.append(f)
+        elif tag.lstrip("0") == want.lstrip("0"):
+            loose.append(f)
+    hits = exact or loose
+    if not hits:
+        raise LookupError(f"no folio with page mark {want!r}")
+    if len(hits) > 1:
+        ids = [_u(f.getID()) for f in hits]
+        raise LookupError(
+            f"page mark {want!r} is ambiguous (folio ids {ids}); use file_id")
+    return hits[0]
 
 
 def list_locations(app: Any, client: Any) -> dict:
@@ -232,7 +247,16 @@ def _part_map(proj: Any, client: Any) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = {}
     mgr = _u(proj.getEwProjectManufacturerPartManager())
     for p in _each(client, _u(mgr.getEwProjectManufacturerPartArray())):
-        comp_id = _u(p.getObjectID())
+        # getObjectID is reused for location-owned parts (rails, ducts), so a
+        # location id can collide with a component id. Keep only parts whose
+        # owner really is a component.
+        try:
+            owner = _u(p.getEwProjectComponent())
+        except Exception:  # noqa: BLE001
+            owner = None
+        if owner is None:
+            continue
+        comp_id = _u(owner.getID())
         out.setdefault(comp_id, []).append({
             "part_id": _u(p.getID()),
             "manufacturer": _u(p.getManufacturer()),
@@ -311,7 +335,11 @@ def list_cables(app: Any, client: Any, limit: int = 500) -> dict:
     proj = _project(app)
     mgr = _u(proj.getEwProjectCableManager())
     rows = []
+    total = 0
     for cb in _each(client, _u(mgr.getEwProjectCableArray())):
+        total += 1
+        if limit and len(rows) >= limit:
+            continue  # keep counting, stop collecting
         rows.append({
             "id": _u(cb.getID()),
             "tag": _u(cb.getTag()),
@@ -324,9 +352,8 @@ def list_cables(app: Any, client: Any, limit: int = 500) -> dict:
             "upstream_location_id": _u(cb.getUpStreamLocationID()),
             "downstream_location_id": _u(cb.getDownStreamLocationID()),
         })
-        if limit and len(rows) >= limit:
-            break
-    return {"count": len(rows), "cables": rows}
+    return {"count": len(rows), "total_in_project": total,
+            "truncated": total > len(rows), "cables": rows}
 
 
 def folio_symbols(app: Any, client: Any, page: str | int | None = None,

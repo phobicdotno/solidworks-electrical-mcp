@@ -26,6 +26,15 @@ connect(license_key=None)
 
 call(path, args=None, root='application')
     Late-bound dotted attribute access on the live COM surface.
+
+call_ops / array_ops / shift_folio_numbers / get_enum / typelib_members
+    Stateful multi-member ops, collection access, page renumbering, and
+    live type-library introspection.
+
+Task-level tools (workflows.py): reconnect, project_info, list_folios,
+    find_folio, list_locations, list_books_and_folders, list_components,
+    find_component, list_cables, folio_symbols, export_folio_pdf,
+    regenerate_title_blocks, rename_project, close_and_reopen_folio.
 """
 
 from __future__ import annotations
@@ -670,7 +679,8 @@ def list_components(tag_contains: str | None = None,
 
     Filter by a substring of the tag/tag path (e.g. "N1N" for the WAGO
     modules, "K" for relays), by location id, or by parent component id
-    (children of a coupler). ``limit`` caps the rows returned.
+    (children of a coupler). ``limit`` caps the rows returned (0 = no cap);
+    ``matched`` and ``truncated`` say whether more exist.
     """
     return _run(wf.list_components, tag_contains=tag_contains,
                 location_id=location_id, parent_id=parent_id,
