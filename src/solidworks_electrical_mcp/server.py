@@ -35,7 +35,8 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     find_folio, list_locations, list_books_and_folders, list_components,
     find_component, list_cables, folio_symbols, export_folio_pdf,
     regenerate_title_blocks, rename_project, close_and_reopen_folio,
-    add_component, clone_component, delete_component.
+    add_component, clone_component, rename_component,
+    delete_component.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ mcp = FastMCP(
         "list_cables · folio_symbols · export_folio_pdf (then Read the PDF to "
         "SEE the page) · regenerate_title_blocks · rename_project · "
         "close_and_reopen_folio · add_component (build one from scratch) "
+        "· rename_component (retag; lists what follows and what does not) "
         "· clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
         "cached COM state after "
@@ -824,6 +826,27 @@ def add_component(tag: str, manufacturer: str, reference: str,
                 parent_tag=parent_tag, page=page, file_id=file_id, x=x, y=y,
                 after_tag=after_tag, shift_following=shift_following,
                 symbol_name=symbol_name, dry_run=dry_run)
+
+
+@mcp.tool
+def rename_component(tag: str, new_tag: str, scan_text: bool = True,
+                     refresh_folios: bool = True,
+                     dry_run: bool = True) -> dict:
+    """Rename a component and account for every reference to it.
+
+    Drawn instances, cross-references between pages and the BOM are linked
+    by component id, so they follow the new mark on their own and the
+    affected pages are simply re-rendered. The mark spelled out as literal
+    TEXT does not follow, so every such place is listed in
+    ``text_references`` for a human to judge instead of being rewritten
+    blindly. The new mark must keep the tag root, so a relay stays rooted K.
+
+    ``dry_run`` is the default and returns the plan, including every symbol
+    that will follow and every text reference that will not.
+    """
+    return _run(wf.rename_component, tag=tag, new_tag=new_tag,
+                scan_text=scan_text, refresh_folios=refresh_folios,
+                dry_run=dry_run)
 
 
 def _isolate_stdout_from_native_pollution() -> None:

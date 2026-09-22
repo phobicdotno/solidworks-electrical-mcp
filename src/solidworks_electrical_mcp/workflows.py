@@ -1352,3 +1352,183 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
         "folio_was_open": bool(folio_row and folio_row["is_open"]),
         "undo": f"delete_component(component_id={new_id})",
     }
+
+
+# --------------------------------------------------------------------------
+# Write-side: rename a component and account for every reference to it
+
+
+def _tag_pattern(tag: str):
+    """Match the mark as a whole word: K30 but not K300, K3 or MK30."""
+    return re.compile(r"(?<![A-Za-z0-9])" + re.escape(tag) + r"(?![0-9])")
+
+
+def _text_references(app: Any, client: Any, tag: str) -> list:
+    """Every place the mark appears as literal TEXT rather than as a link.
+
+    Symbols point at a component by id, so they re-render after a rename on
+    their own. Text that merely spells the mark out (a description someone
+    typed, a free text on a drawing) does not, and is what actually goes
+    stale. This is the list a rename has to hand back.
+    """
+    pat = _tag_pattern(tag)
+    proj = _project(app)
+    hits: list[dict] = []
+
+    for c in _each(client, _u(_u(proj.getEwProjectComponentManager())
+                              .getEwProjectComponentArray())):
+        d = str(_u(c.getDescription(LANG)) or "")
+        if pat.search(d):
+            hits.append({"kind": "component description",
+                         "id": _u(c.getID()), "tag": _u(c.getTag()),
+                         "text": d})
+    for cb in _each(client, _u(_u(proj.getEwProjectCableManager())
+                               .getEwProjectCableArray())):
+        d = str(_u(cb.getDescription(LANG)) or "")
+        if pat.search(d):
+            hits.append({"kind": "cable description", "id": _u(cb.getID()),
+                         "tag": _u(cb.getTag()), "text": d})
+
+    file_mgr = _u(proj.getEwProjectFileManager())
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    for f in _each(client, _u(file_mgr.getEwProjectFileArray())):
+        fid = _u(f.getID())
+        page = _u(f.getTag())
+        d = str(_u(f.getDescription(LANG)) or "")
+        if pat.search(d):
+            hits.append({"kind": "folio description", "id": fid,
+                         "page": page, "text": d})
+        for sym in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
+            try:
+                n = int(_u(sym.getTranslatableTextCount()) or 0)
+            except Exception:  # noqa: BLE001
+                continue
+            for i in range(n):
+                try:
+                    tx = str(_u(sym.getTranslatableTextAt(i)) or "")
+                except Exception:  # noqa: BLE001
+                    continue
+                if pat.search(tx):
+                    hits.append({"kind": "symbol text", "page": page,
+                                 "id": _u(sym.getID()), "index": i,
+                                 "text": tx})
+    return hits
+
+
+def _symbols_bound_to(app: Any, client: Any, component_id: int) -> list:
+    """Every drawn instance of a component, across all folios."""
+    proj = _project(app)
+    file_mgr = _u(proj.getEwProjectFileManager())
+    sym_mgr = _u(proj.getEwProjectSymbolManager())
+    out = []
+    for f in _each(client, _u(file_mgr.getEwProjectFileArray())):
+        fid = _u(f.getID())
+        for sym in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
+            if _u(sym.getObjectID()) != component_id:
+                continue
+            out.append({"page": _u(f.getTag()), "file_id": fid,
+                        "symbol_id": _u(sym.getID()),
+                        "symbol_name": _u(sym.getEwSymbolName()),
+                        "symbol_type": SYMBOL_TYPE_NAMES.get(
+                            _u(sym.getEwSymbolType()),
+                            str(_u(sym.getEwSymbolType()))),
+                        "is_open": bool(_u(f.isOpen()))})
+    return out
+
+
+def rename_component(app: Any, client: Any, tag: str, new_tag: str,
+                     scan_text: bool = True, refresh_folios: bool = True,
+                     dry_run: bool = True) -> dict:
+    """Rename a component and account for everything that refers to it.
+
+    A component's drawn instances point at it by id, so every symbol, every
+    cross-reference between pages and the BOM follow the new mark on their
+    own; the pages only need re-rendering. What does NOT follow is the mark
+    spelled out as literal text somewhere, so those places are listed
+    (``text_references``) for a human to decide on rather than being
+    rewritten blindly.
+
+    The new mark must keep the tag root, so a relay stays rooted K.
+    """
+    src = _find_one_component(app, client, tag)
+    src_id = _u(src.getID())
+    old_bare = str(_u(src.getTag()))
+    new_bare = new_tag.strip().lstrip("-")
+
+    src_root = (str(_u(src.getTagRoot()) or "").strip()
+                or _tag_root(old_bare))
+    new_root = _tag_root(new_bare)
+    if new_root.casefold() != src_root.casefold():
+        raise ValueError(
+            f"tag root must stay {src_root!r} when renaming {old_bare!r} "
+            f"(got {new_bare!r}, root {new_root!r}). MR rule: a device keeps "
+            "its class; relays are always rooted K.")
+    if new_root != src_root:
+        new_bare = src_root + new_bare[len(new_root):]
+    if new_bare == old_bare:
+        raise ValueError(f"{old_bare!r} already has that mark")
+    try:
+        _find_one_component(app, client, new_bare)
+    except LookupError as e:
+        if "ambiguous" in str(e):
+            raise ValueError(
+                f"{new_bare!r} already exists more than once: {e}") from e
+    else:
+        raise ValueError(f"a component tagged {new_bare!r} already exists")
+
+    bound = _symbols_bound_to(app, client, src_id)
+    text_refs = _text_references(app, client, old_bare) if scan_text else None
+    plan = {
+        "component": _component_row(src, None),
+        "old_tag": old_bare, "new_tag": new_bare,
+        "symbols_following_the_rename": bound,
+        "text_references": text_refs,
+        "note": ("symbols and cross-references are linked by component id and "
+                 "follow the rename; any text_references spell the old mark "
+                 "out and must be judged by hand"),
+    }
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+
+    steps: list[dict] = []
+
+    def step(name: str, fn: Callable[[], Any]) -> Any:
+        try:
+            r = fn()
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"step": name, "error": f"{type(exc).__name__}: {exc}"})
+            return None
+        steps.append({"step": name, "rc": _rc(r), "rc_name": _rc_name(_rc(r))})
+        return r
+
+    step("setTag", lambda: src.setTag(new_bare))
+    step("update", src.update)
+    now = str(_u(src.getTag()))
+
+    # Re-render every page that draws it, so the sheets show the new mark.
+    refreshed = []
+    if refresh_folios and now == new_bare:
+        for fid in sorted({b["file_id"] for b in bound}):
+            f = find_folio(app, client, file_id=fid)
+            was_open = bool(_u(f.isOpen()))
+            rc_c = _rc(f.close()) if was_open else None
+            rc_o = _rc(f.open()) if was_open else None
+            refreshed.append({"file_id": fid, "page": _u(f.getTag()),
+                              "was_open": was_open,
+                              "close_rc": rc_c, "open_rc": rc_o})
+
+    still_bound = _symbols_bound_to(app, client, src_id)
+    errors = [st for st in steps
+              if st.get("error") or st.get("rc") not in (0, None)]
+    return {
+        "ok": not errors and now == new_bare
+              and len(still_bound) == len(bound),
+        "dry_run": False,
+        "old_tag": old_bare, "new_tag": now,
+        "component": _component_row(src, None),
+        "symbols_still_bound": still_bound,
+        "folios_refreshed": refreshed,
+        "text_references": text_refs,
+        "steps": steps, "errors": errors,
+        "undo": f"rename_component(tag={new_bare!r}, new_tag={old_bare!r})",
+    }
