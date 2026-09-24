@@ -539,10 +539,24 @@ def close_and_reopen_folio(app: Any, client: Any, page: str | int | None = None,
 
 def _split_mark(mark: str) -> tuple:
     """Split a device mark into (root, number, suffix): "K29B" -> ("K", 29,
-    "B"), "K38" -> ("K", 38, ""), "K" -> ("K", None, "")."""
+    "B"), "K38" -> ("K", 38, ""), "K" -> ("K", None, ""), "CC_K1" ->
+    ("K", 1, "")."""
+    text = mark.strip().lstrip("-")
+    # An all-letters prefix before an underscore is a NAMESPACE, not the
+    # device class: "CC_K1" is a K relay kept out of the way of the existing
+    # K series, so its root is K and its number is 1. Reading the prefix as
+    # the root files every CC_ device under root "CC" with no number at all,
+    # which leaves SOLIDWORKS nothing to renumber by and breaks the house
+    # rule that a relay is always root K. A prefix containing digits is left
+    # alone, so marks like "K1_2" keep their old reading.
+    core = text
+    if "_" in text:
+        head, tail = text.rsplit("_", 1)
+        if head.isalpha() and tail[:1].isalpha():
+            core = tail
     # The letters are optional: a folder tag is a bare number ("7"), and its
     # root is empty rather than the digits.
-    m = re.match(r"^([A-Za-z]*)(\d+)?(.*)$", mark.strip().lstrip("-"))
+    m = re.match(r"^([A-Za-z]*)(\d+)?(.*)$", core)
     if not m:
         return mark, None, ""
     root, num, suffix = m.group(1), m.group(2), m.group(3) or ""
