@@ -45,6 +45,7 @@ def main() -> int:
         print(f"----- {s.name}")
         try:
             r = subprocess.run([PY, str(s)], cwd=HERE.parent, timeout=TIMEOUT,
+                               check=False,
                                capture_output=True, text=True)
         except subprocess.TimeoutExpired:
             failed.append((s.name, f"timed out after {TIMEOUT}s"))
