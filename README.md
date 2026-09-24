@@ -151,6 +151,39 @@ No `env` block is needed — the shared licence code is bundled, so
 Set `SWELE_LICENCE_KEY` only to override the bundled key (e.g. if a future
 release rotates it).
 
+## Running the tests
+
+```
+.venv/Scripts/python.exe tests/run_all.py          # everything that runs offline
+.venv/Scripts/python.exe tests/run_all.py --live   # plus the two that drive the app
+```
+
+Do not use plain `pytest` here. The tests are standalone scripts with no test
+functions, so pytest collects nothing and exits **green** with "no tests ran".
+
+`run_all.py` also refuses a second false all-clear: most of these scripts skip
+at runtime when SOLIDWORKS Electrical is not attached, and they exit 0 when
+they do, so the exit code reports a pass for a test that checked nothing. The
+runner reads the SKIP marker out of the output and reports it as a skip.
+
+Only three tests genuinely run with no application: `test_batch_symbol_ops`
+(the folio close/open batching), `test_stale_factory_retry` (cached COM
+objects outliving the program) and `test_stdout_isolation`. Everything else
+needs the program running with a project open, which the two `--live` tests
+require outright.
+
+## Editing a page: batch, do not loop
+
+`place_symbol`, `remove_symbol`, `add_text` and `remove_text` each close and
+reopen the folio around every single call, because a symbol written into a
+folio the GUI has open is discarded when the editor saves its copy back.
+Calling them in a loop churns the editor once per unit and can take
+SOLIDWORKS Electrical down - a twelve-device cabinet page did exactly that.
+
+Use the batch forms, which close once and reopen once for the whole page:
+`place_symbols`, `remove_symbols`, `add_texts`, `remove_texts`, `move_symbols`.
+Open and close the folio per TASK, not per unit.
+
 ## Why local stdio (not remote HTTP)
 
 SOLIDWORKS Electrical is a Windows desktop application accessed through COM —
