@@ -24,6 +24,9 @@ Cases:
   E. _set_mark writes tag, root AND number together
   F. _set_mark puts the printed mark back when setting the root rewrote it
   G. a mark with no number does not call setTagNumber with None
+  H. a CC_ relay goes in end to end as a numbered K
+  I. audit_tag_roots reports the CC_ components already in the project as
+     drift, and fix=True files them under K without touching the marks
 
 Run directly:
     .venv/Scripts/python.exe tests/test_tag_marks.py
@@ -172,6 +175,80 @@ check(c.root == "K" and c.number == 105,
 check(c.tag == "CC_K105",
       f"H: the printed mark must stay CC_K105, got {c.tag!r}")
 ok("H ok: CC_K105 prints as CC_K105 and files as K / 105", mark)
+
+mark = len(failures)
+# --- I: audit_tag_roots finds and repairs the CC_ components --------------
+# The ten relays are already in the project filed under root "CC" with no
+# number, created before the namespace rule existed. The audit has to see
+# that as drift and fix=True has to put it right, since that is the repair
+# path for the live project.
+class AuditComponent(FakeComponent):
+    def __init__(self, tag, root, number):
+        super().__init__(tag, rewrites=False)
+        self.root, self.number = root, number
+        self.cid = abs(hash(tag)) % 10000
+
+    def getID(self):
+        return self.cid
+
+    def getTagPath(self):
+        return f"=CC+L6-{self.tag}"
+
+    def getTagRoot(self):
+        return self.root
+
+    def getTagNumber(self):
+        return self.number
+
+
+class AuditMgr:
+    def __init__(self, comps):
+        self.comps = comps
+
+    def getEwProjectComponentArray(self):
+        return self.comps
+
+
+class AuditProject:
+    def __init__(self, mgr):
+        self.mgr = mgr
+
+    def getEwProjectComponentManager(self):
+        return self.mgr
+
+
+# as created: mark CC_Kn, but filed as root "CC" with no number at all
+broken = [AuditComponent(f"CC_K{n}", "CC", None) for n in (1, 2, 3, 100, 105)]
+healthy = [AuditComponent("K40", "K", 40), AuditComponent("T58", "T", 58)]
+orig_project = wf._project
+orig_each = wf._each
+wf._project = lambda app: AuditProject(AuditMgr(broken + healthy))
+wf._each = lambda client, arr: list(arr or ())
+try:
+    r = wf.audit_tag_roots(None, None, tag_contains="CC_")
+    check(r["count"] == 5,
+          f"I: expected the 5 CC_ relays to show as drift, got {r['count']}")
+    check(all(x["root_mismatch"] and x["number_mismatch"]
+              for x in r["components"]),
+          "I: both the root AND the missing number should be reported")
+    check(not any(x["tag"].startswith("K4") for x in r["components"]),
+          "I: a correctly filed component must not be reported as drift")
+
+    r = wf.audit_tag_roots(None, None, tag_contains="CC_", fix=True)
+    check(all(c.root == "K" for c in broken),
+          f"I: fix should file them all under K, got "
+          f"{[c.root for c in broken]}")
+    check([c.number for c in broken] == [1, 2, 3, 100, 105],
+          f"I: fix should set each number, got {[c.number for c in broken]}")
+    check([c.tag for c in broken]
+          == [f"CC_K{n}" for n in (1, 2, 3, 100, 105)],
+          f"I: the printed marks must be untouched, got "
+          f"{[c.tag for c in broken]}")
+    ok("I ok: audit reports the 5 CC_ relays and fix files them as K 1..105",
+       mark)
+finally:
+    wf._project = orig_project
+    wf._each = orig_each
 
 print()
 if failures:
