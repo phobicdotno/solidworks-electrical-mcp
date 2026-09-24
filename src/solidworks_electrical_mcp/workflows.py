@@ -2809,7 +2809,8 @@ _SHEET_WIDTH_MM = {1191: 420.0, 842: 297.0, 1684: 594.0, 2384: 841.0}
 def check_page_ink(app: Any, client: Any, page: str | int | None = None,
                    file_id: int | None = None, box: dict | None = None,
                    sheet_width_mm: float | None = None,
-                   max_frame_mm: float = 250.0) -> dict:
+                   max_frame_mm: float = 250.0,
+                   frame_thickness_mm: float = 3.0) -> dict:
     """Measure what is actually DRAWN on a folio and flag ink outside the box.
 
     ``check_drawing_rules`` only sees connection points and line ends. A 2D
@@ -2819,8 +2820,10 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
     out. This exports the folio and measures the real vector ink instead.
 
     Frame and title-block geometry is excluded: any path longer than
-    ``max_frame_mm`` along either axis, and anything lying wholly below the
-    box. What remains is device geometry.
+    ``max_frame_mm`` that is also thinner than ``frame_thickness_mm`` (a
+    border rule is long AND thin - length alone would discard a large device,
+    and the AN-2823-AB enclosure is 260 mm wide), and anything lying wholly
+    below the box. What remains is device geometry.
     """
     try:
         import fitz
@@ -2858,8 +2861,12 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
 
     ink = []
     for r in rects:
-        if r.width / s > max_frame_mm or r.height / s > max_frame_mm:
-            continue                      # sheet frame / title-block rules
+        long_mm = max(r.width, r.height) / s
+        short_mm = min(r.width, r.height) / s
+        # A border rule is long AND thin. Testing length alone would discard
+        # a genuinely large device: the AN-2823-AB enclosure is 260 mm wide.
+        if long_mm > max_frame_mm and short_mm < frame_thickness_mm:
+            continue
         if (h_pt - r.y0) / s < bx["y_min"]:
             continue                      # wholly below the drawable box
         ink.append(r)
