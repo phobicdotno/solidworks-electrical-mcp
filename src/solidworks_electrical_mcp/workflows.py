@@ -17,8 +17,10 @@ Conventions
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import tempfile
 from typing import Any, Callable, Iterable
 
 from .com import coerce_value
@@ -2798,3 +2800,90 @@ def delete_location(app: Any, client: Any, location_id: int) -> dict:
     rc = _rc(loc.remove())
     return {"ok": rc in (0, None), "removed": row, "rc": rc,
             "rc_name": _rc_name(rc)}
+
+
+# Sheet widths in millimetres, keyed by the PDF page width in points.
+_SHEET_WIDTH_MM = {1191: 420.0, 842: 297.0, 1684: 594.0, 2384: 841.0}
+
+
+def check_page_ink(app: Any, client: Any, page: str | int | None = None,
+                   file_id: int | None = None, box: dict | None = None,
+                   sheet_width_mm: float | None = None,
+                   max_frame_mm: float = 250.0) -> dict:
+    """Measure what is actually DRAWN on a folio and flag ink outside the box.
+
+    ``check_drawing_rules`` only sees connection points and line ends. A 2D
+    footprint imported from a DWG reports ``getWidth`` 0 and carries no
+    connection points, so a footprint whose body hangs outside the drawable
+    box passes that check while the exported sheet clearly shows it hanging
+    out. This exports the folio and measures the real vector ink instead.
+
+    Frame and title-block geometry is excluded: any path longer than
+    ``max_frame_mm`` along either axis, and anything lying wholly below the
+    box. What remains is device geometry.
+    """
+    try:
+        import fitz
+    except ImportError:
+        return {"ok": False,
+                "error": "PyMuPDF (fitz) is not installed; "
+                         "pip install pymupdf to use check_page_ink"}
+    bx = {**GO_BOX, **(box or {})}
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+    tmp = os.path.join(tempfile.gettempdir(),
+                       f"swe_ink_{row['id']}_{os.getpid()}.pdf")
+    try:
+        exp = export_folio_pdf(app, client, output_path=tmp, file_ids=[row["id"]])
+        if not exp.get("ok"):
+            return {"ok": False, "folio": row, "error": "export failed",
+                    "export": exp}
+        doc = fitz.open(tmp)
+        try:
+            pg = doc[0]
+            w_pt, h_pt = pg.rect.width, pg.rect.height
+            sw = (float(sheet_width_mm) if sheet_width_mm
+                  else _SHEET_WIDTH_MM.get(round(w_pt)))
+            if not sw:
+                return {"ok": False, "folio": row,
+                        "error": f"unknown sheet size {w_pt:.0f}x{h_pt:.0f} pt; "
+                                 "pass sheet_width_mm"}
+            s = w_pt / sw
+            rects = [p["rect"] for p in pg.get_drawings()]
+        finally:
+            doc.close()
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+    ink = []
+    for r in rects:
+        if r.width / s > max_frame_mm or r.height / s > max_frame_mm:
+            continue                      # sheet frame / title-block rules
+        if (h_pt - r.y0) / s < bx["y_min"]:
+            continue                      # wholly below the drawable box
+        ink.append(r)
+    if not ink:
+        return {"ok": True, "folio": row, "box": bx, "paths": 0,
+                "extent": None, "inside": True, "overflow": {}}
+
+    x0 = min(r.x0 for r in ink) / s
+    x1 = max(r.x1 for r in ink) / s
+    y0 = (h_pt - max(r.y1 for r in ink)) / s
+    y1 = (h_pt - min(r.y0 for r in ink)) / s
+    over = {}
+    if x0 < bx["x_min"] - _SNAP:
+        over["left"] = round(bx["x_min"] - x0, 2)
+    if x1 > bx["x_max"] + _SNAP:
+        over["right"] = round(x1 - bx["x_max"], 2)
+    if y0 < bx["y_min"] - _SNAP:
+        over["bottom"] = round(bx["y_min"] - y0, 2)
+    if y1 > bx["y_max"] + _SNAP:
+        over["top"] = round(y1 - bx["y_max"], 2)
+    return {"ok": True, "folio": row, "box": bx, "paths": len(ink),
+            "extent": {"x_min": round(x0, 2), "x_max": round(x1, 2),
+                       "y_min": round(y0, 2), "y_max": round(y1, 2)},
+            "inside": not over, "overflow": over,
+            "note": ("drawn ink is inside the drawable box" if not over
+                     else "drawn geometry hangs outside the box by the "
+                          "millimetres listed in overflow")}

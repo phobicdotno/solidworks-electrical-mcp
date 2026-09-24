@@ -39,6 +39,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     renumber_components, audit_tag_roots,
     add_folder, rename_folder, delete_folder,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
+    check_page_ink,
     add_location, delete_location, attach_manufacturer_part,
     place_symbol, remove_symbol, move_symbols,
     add_text, list_texts, remove_text,
@@ -81,7 +82,8 @@ mcp = FastMCP(
         "move_symbol/move_symbols (draw an existing component, and move "
         "one WITH its wires; prefer the batch) · add_text/list_texts/"
         "remove_text · check_drawing_rules (crowding and the drawable "
-        "box) · clone_component (\"on sheet 10 clone K32 "
+        "box) · check_page_ink (what is really DRAWN, which catches a "
+        "footprint hanging outside the box) · clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
         "cached COM state after "
         "SOLIDWORKS was restarted). Reach for the generic call/call_ops/"
@@ -996,6 +998,27 @@ def check_drawing_rules(page: str | int | None = None,
     """
     return _run(wf.check_drawing_rules, page=page, file_id=file_id,
                 min_spacing=min_spacing, box=box)
+
+
+@mcp.tool
+def check_page_ink(page: str | int | None = None,
+                   file_id: int | None = None,
+                   box: dict | None = None,
+                   sheet_width_mm: float | None = None) -> dict:
+    """Measure what is actually DRAWN on a folio and flag ink outside the box.
+
+    Use this alongside ``check_drawing_rules``, which only sees connection
+    points and line ends. A 2D footprint imported from a DWG reports
+    ``getWidth`` 0 and carries no connection points, so a footprint whose
+    body hangs outside the drawable box passes that check even though the
+    exported sheet plainly shows it hanging out. This exports the folio and
+    measures the real vector ink, ignoring the sheet frame and title block.
+
+    Returns the drawn extent in page millimetres plus, per side, how far it
+    overflows the box. Requires PyMuPDF.
+    """
+    return _run(wf.check_page_ink, page=page, file_id=file_id, box=box,
+                sheet_width_mm=sheet_width_mm)
 
 
 @mcp.tool
