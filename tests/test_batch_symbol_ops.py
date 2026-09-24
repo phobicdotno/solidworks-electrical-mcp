@@ -31,7 +31,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-from solidworks_electrical_mcp import workflows as wf  # noqa: E402
+from solidworks_electrical_mcp import workflows as wf
 
 failures: list[str] = []
 
@@ -183,7 +183,7 @@ def unpatch():
 
 
 def rows(n, y=160.0):
-    return [{"tag": "K%d" % i, "symbol_name": "859-304", "x": 100.0 + i * 6,
+    return [{"tag": f"K{i}", "symbol_name": "859-304", "x": 100.0 + i * 6,
              "y": y, "symbol_type": 105, "rotation": -90.0}
             for i in range(n)]
 
@@ -195,14 +195,14 @@ try:
     patch(folio)
     r = wf.place_symbols(None, None, placements=rows(12), page="102",
                          dry_run=False)
-    check(r["ok"], "A: batch should succeed, got %s" % r.get("error"))
-    check(r["placed"] == 12, "A: expected 12 placed, got %s" % r.get("placed"))
+    check(r["ok"], f"A: batch should succeed, got {r.get('error')}")
+    check(r["placed"] == 12,
+          f"A: expected 12 placed, got {r.get('placed')}")
     check(folio.closes == 1,
-          "A: folio must close ONCE for the page, closed %dx" % folio.closes)
+          f"A: folio must close ONCE for the page, closed {folio.closes}x")
     check(folio.opens == 1,
-          "A: folio must reopen ONCE, opened %dx" % folio.opens)
-    ok("A ok: 12 devices, %d close / %d open"
-       % (folio.closes, folio.opens), mark)
+          f"A: folio must reopen ONCE, opened {folio.opens}x")
+    ok(f"A ok: 12 devices, {folio.closes} close / {folio.opens} open", mark)
 
     mark = len(failures)
     # --- B: validation happens before anything is touched ----------------
@@ -214,8 +214,8 @@ try:
                          dry_run=False)
     check(not r["ok"], "B: a placement outside the box must fail the batch")
     check(folio2.closes == 0 and not folio2.made,
-          "B: nothing may be inserted when validation fails; closes=%d made=%d"
-          % (folio2.closes, len(folio2.made)))
+          f"B: nothing may be inserted when validation fails; "
+          f"closes={folio2.closes} made={len(folio2.made)}")
     ok("B ok: out-of-box origin refused before the folio was touched", mark)
 
     mark = len(failures)
@@ -234,12 +234,11 @@ try:
                          dry_run=False)
     check(not r["ok"], "C: batch with a stray point must report ok False")
     check(r["placed"] == 4 and r["failed"] == 1,
-          "C: expected 4 placed / 1 failed, got %s/%s"
-          % (r["placed"], r["failed"]))
+          f"C: expected 4 placed / 1 failed, got {r['placed']}/{r['failed']}")
     check(("remove", 103) in folio3.log,
           "C: the offending symbol must be taken back out")
     check(folio3.closes == 1 and folio3.opens == 1,
-          "C: still one cycle, got %d/%d" % (folio3.closes, folio3.opens))
+          f"C: still one cycle, got {folio3.closes}/{folio3.opens}")
     ok("C ok: 1 of 5 rejected and removed, neighbours kept, one cycle", mark)
 
     mark = len(failures)
@@ -250,8 +249,8 @@ try:
                          dry_run=False)
     check(r["ok"], "D: closed-folio batch should succeed")
     check(folio4.closes == 0 and folio4.opens == 0,
-          "D: a closed folio must stay untouched, got %d close / %d open"
-          % (folio4.closes, folio4.opens))
+          f"D: a closed folio must stay untouched, got "
+          f"{folio4.closes} close / {folio4.opens} open")
     ok("D ok: closed folio neither closed nor reopened", mark)
 
     mark = len(failures)
@@ -263,14 +262,13 @@ try:
     patch(folio5)
     wf._project = lambda app: FakeProject(FakeSymMgr(syms + [foreign]))
     r = wf.remove_symbols(None, None, page="102", all_on_page=True)
-    check(r["ok"], "E: clear-page should succeed, got %s" % r.get("error"))
+    check(r["ok"], f"E: clear-page should succeed, got {r.get('error')}")
     check(r["removed"] == 12,
-          "E: expected 12 removed, got %s" % r.get("removed"))
+          f"E: expected 12 removed, got {r.get('removed')}")
     check(folio5.closes == 1 and folio5.opens == 1,
-          "E: clearing a page must be ONE cycle, got %d close / %d open"
-          % (folio5.closes, folio5.opens))
-    ok("E ok: cleared 12, %d close / %d open"
-       % (folio5.closes, folio5.opens), mark)
+          f"E: clearing a page must be ONE cycle, got "
+          f"{folio5.closes} close / {folio5.opens} open")
+    ok(f"E ok: cleared 12, {folio5.closes} close / {folio5.opens} open", mark)
 
     mark = len(failures)
     # --- F: a symbol on another folio is reported, not crashed on --------
@@ -281,8 +279,7 @@ try:
     r = wf.remove_symbols(None, None, symbol_ids=[300, 999, 301])
     check(not r["ok"], "F: a foreign symbol id must fail the batch")
     check(r["removed"] == 2,
-          "F: the two same-folio symbols should still go, got %s"
-          % r["removed"])
+          f"F: the two same-folio symbols should still go, got {r['removed']}")
     check(any("another folio" in str(x.get("error", ""))
               for x in r["results"]),
           "F: the foreign id must be named, not crashed on")
@@ -293,7 +290,7 @@ finally:
 
 print()
 if failures:
-    print("%d FAILURE(S)" % len(failures))
+    print(f"{len(failures)} FAILURE(S)")
     for f in failures:
         print("  -", f)
     sys.exit(1)
