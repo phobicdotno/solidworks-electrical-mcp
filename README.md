@@ -166,7 +166,8 @@ at runtime when SOLIDWORKS Electrical is not attached, and they exit 0 when
 they do, so the exit code reports a pass for a test that checked nothing. The
 runner reads the SKIP marker out of the output and reports it as a skip.
 
-Seven tests genuinely run with no application: `test_tool_surface` (every
+Eight tests genuinely run with no application: `test_renumber` (a bulk
+retag never letting two devices share a mark), `test_tool_surface` (every
 tool reaches its workflow and forwards what it declares),
 `test_batch_symbol_ops` (the
 folio close/open batching), `test_drawing_rules` (dot-to-dot spacing, the
