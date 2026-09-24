@@ -41,7 +41,8 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_folio, delete_folio, move_symbol, check_drawing_rules,
     check_page_ink,
     add_location, delete_location, attach_manufacturer_part,
-    place_symbol, remove_symbol, move_symbols,
+    place_symbol, place_symbols, remove_symbol, remove_symbols,
+    move_symbols,
     add_text, list_texts, remove_text,
     delete_component.
 """
@@ -78,7 +79,8 @@ mcp = FastMCP(
         "· add_folder/rename_folder/delete_folder and add_folio/delete_folio "
         "(the document tree and its pages; insert_before_page cascades "
         "the numbers) · add_location · attach_manufacturer_part (a part "
-        "the library does not carry) · place_symbol/remove_symbol/"
+        "the library does not carry) · place_symbol/place_symbols (BATCH: one folio close for the "
+        "whole page, strongly preferred)/remove_symbol/"
         "move_symbol/move_symbols (draw an existing component, and move "
         "one WITH its wires; prefer the batch) · add_text/list_texts/"
         "remove_text · check_drawing_rules (crowding and the drawable "
@@ -1019,6 +1021,40 @@ def check_page_ink(page: str | int | None = None,
     """
     return _run(wf.check_page_ink, page=page, file_id=file_id, box=box,
                 sheet_width_mm=sheet_width_mm)
+
+
+@mcp.tool
+def place_symbols(placements: list[dict], page: str | int | None = None,
+                  file_id: int | None = None, box: dict | None = None,
+                  dry_run: bool = True) -> dict:
+    """Draw several components on ONE page, closing the folio only once.
+
+    PREFER THIS over repeated place_symbol calls whenever more than one
+    device goes on the same page. place_symbol closes and reopens the folio
+    around every insert, and that per-device churn of the editor tab can
+    take SOLIDWORKS Electrical down. Open and close per TASK, not per unit.
+
+    Each placement is a dict with tag, symbol_name, x, y, and optionally
+    symbol_type (default 20), rotation, x_scale, y_scale.
+    """
+    return _run(wf.place_symbols, placements=placements, page=page,
+                file_id=file_id, box=box, dry_run=dry_run)
+
+
+@mcp.tool
+def remove_symbols(symbol_ids: list[int] | None = None,
+                   page: str | int | None = None,
+                   file_id: int | None = None,
+                   all_on_page: bool = False) -> dict:
+    """Delete several drawn symbols, closing the folio only once.
+
+    PREFER THIS over repeated remove_symbol calls. Pass all_on_page=True
+    with a page to clear the whole folio. Open and close per TASK, not per
+    unit: per-symbol churn of the editor tab can take SOLIDWORKS Electrical
+    down.
+    """
+    return _run(wf.remove_symbols, symbol_ids=symbol_ids, page=page,
+                file_id=file_id, all_on_page=all_on_page)
 
 
 @mcp.tool

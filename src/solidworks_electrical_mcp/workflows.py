@@ -2887,3 +2887,201 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
             "note": ("drawn ink is inside the drawable box" if not over
                      else "drawn geometry hangs outside the box by the "
                           "millimetres listed in overflow")}
+
+
+def place_symbols(app: Any, client: Any, placements: list[dict],
+                  page: str | int | None = None, file_id: int | None = None,
+                  box: dict | None = None, dry_run: bool = True) -> dict:
+    """Draw several existing components on ONE page, closing the folio once.
+
+    ``place_symbol`` closes and reopens the folio around every single insert,
+    because a symbol written into a folio the GUI has open is discarded when
+    the editor saves its copy back. Doing that per device churns the editor
+    hard - laying out a twelve-device cabinet page meant twelve close/open
+    cycles - and that churn can take SOLIDWORKS Electrical down.
+
+    This closes the folio once, inserts every placement, and reopens once at
+    the end, so the tab is opened and closed per TASK rather than per device.
+
+    Each entry of ``placements`` is a dict with ``tag`` and ``symbol_name``,
+    ``x`` and ``y``, and optionally ``symbol_type`` (default 20),
+    ``rotation``, ``x_scale`` and ``y_scale``. A placement whose origin or
+    connection points fall outside the box is rejected and taken back out;
+    the rest still go in, and the result reports each one separately.
+    """
+    if not placements:
+        return {"ok": False, "error": "no placements given"}
+    bx = {**GO_BOX, **(box or {})}
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+
+    prepared, planned = [], []
+    for i, p in enumerate(placements):
+        try:
+            tag = str(p["tag"])
+            name = str(p["symbol_name"])
+            x, y = float(p["x"]), float(p["y"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"ok": False, "folio": row,
+                    "error": f"placement {i} is malformed: {exc}"}
+        comp = _find_one_component(app, client, tag)
+        inside = (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
+                  and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP)
+        planned.append({"tag": tag, "symbol_name": name, "x": x, "y": y,
+                        "origin_inside_box": inside})
+        if not inside:
+            return {"ok": False, "folio": row, "planned": planned,
+                    "error": f"placement {i} ({tag}) origin ({x}, {y}) is "
+                             f"outside the drawable box {bx}"}
+        prepared.append((p, tag, name, x, y, _u(comp.getID())))
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "folio": row,
+                "count": len(planned), "planned": planned,
+                "note": "origins checked; connection points are only "
+                        "knowable after the insert"}
+
+    was_open = row["is_open"]
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "folio": row, "steps": steps,
+                    "error": "could not close the folio; refusing to insert "
+                             "into a stale editor copy"}
+    results = []
+    try:
+        for p, tag, name, x, y, cid in prepared:
+            st: dict[str, Any] = {}
+            sym = _u(f.newEwProjectSymbolFromSymbolType(
+                int(p.get("symbol_type", 20))))
+            if sym is None:
+                results.append({"tag": tag, "ok": False,
+                                "error": "newEwProjectSymbolFromSymbolType "
+                                         "returned NULL"})
+                continue
+            st["setObjectID"] = _rc(sym.setObjectID(cid))
+            st["setEwSymbolName"] = _rc(sym.setEwSymbolName(name))
+            st["setXPosition"] = _rc(sym.setXPosition(x))
+            st["setYPosition"] = _rc(sym.setYPosition(y))
+            if p.get("rotation"):
+                st["setRotationAngle"] = _rc(
+                    sym.setRotationAngle(float(p["rotation"])))
+            if p.get("x_scale") is not None:
+                st["setXScale"] = _rc(sym.setXScale(float(p["x_scale"])))
+            if p.get("y_scale") is not None:
+                st["setYScale"] = _rc(sym.setYScale(float(p["y_scale"])))
+            st["insert"] = _rc(sym.insert())
+            pts = _symbol_points(sym)
+            stray = [q for q in pts
+                     if not (bx["x_min"] - _SNAP <= q["x"] <= bx["x_max"] + _SNAP
+                             and bx["y_min"] - _SNAP <= q["y"] <= bx["y_max"] + _SNAP)]
+            if stray:
+                sid = _u(sym.getID())
+                rc_rm = _rc(sym.remove())
+                results.append({"tag": tag, "ok": False, "steps": st,
+                                "outside_box": stray,
+                                "removed_cleanly": rc_rm in (0, None),
+                                "error": f"symbol {sid} put {len(stray)} "
+                                         "connection point(s) outside the box"})
+                continue
+            bad = {k: v for k, v in st.items() if v not in (0, None)}
+            results.append({"tag": tag, "ok": not bad,
+                            "symbol_id": _u(sym.getID()),
+                            "x": x, "y": y, "points": len(pts),
+                            "bad_steps": bad})
+    finally:
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+
+    placed = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return {"ok": not failed, "dry_run": False, "folio": row,
+            "requested": len(prepared), "placed": len(placed),
+            "failed": len(failed), "results": results, "steps": steps,
+            "undo": "remove symbols "
+                    + ", ".join(str(r["symbol_id"]) for r in placed),
+            "note": "the folio was closed once and reopened once for the "
+                    "whole batch"}
+
+
+def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
+                   page: str | int | None = None,
+                   file_id: int | None = None,
+                   all_on_page: bool = False) -> dict:
+    """Delete several drawn symbols, closing the folio only once.
+
+    The batch counterpart to ``remove_symbol``, which closes and reopens the
+    folio around every single deletion. Clearing a twelve-device page one
+    symbol at a time means twelve editor close/open cycles; that churn can
+    take SOLIDWORKS Electrical down, so open and close per TASK.
+
+    Give either ``symbol_ids``, or ``all_on_page=True`` with a page, which
+    clears every symbol on that folio. Lines left hanging where a symbol was
+    are reported, not removed.
+    """
+    proj = _project(app)
+    smgr = _u(proj.getEwProjectSymbolManager())
+    if all_on_page:
+        f = find_folio(app, client, page=page, file_id=file_id)
+        fid = _u(f.getID())
+        ids = [_u(s.getID())
+               for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid)))]
+    else:
+        ids = [int(i) for i in (symbol_ids or [])]
+        if not ids:
+            return {"ok": False, "error": "give symbol_ids or all_on_page=True"}
+        first = _u(smgr.getProjectSymbolByID(ids[0]))
+        if first is None:
+            raise LookupError(f"no symbol with id {ids[0]}")
+        fid = _u(first.getFileID())
+        f = find_folio(app, client, file_id=fid)
+    if not ids:
+        return {"ok": True, "file_id": fid, "requested": 0, "removed": 0,
+                "results": [], "note": "nothing to remove"}
+
+    was_open = bool(_u(f.isOpen()))
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "file_id": fid, "steps": steps,
+                    "error": "could not close the folio; refusing to edit a "
+                             "stale editor copy"}
+    lines = _folio_lines(app, client, fid)
+    results, dangling = [], []
+    try:
+        for sid in ids:
+            sym = _u(smgr.getProjectSymbolByID(int(sid)))
+            if sym is None:
+                results.append({"symbol_id": sid, "ok": False,
+                                "error": "no such symbol"})
+                continue
+            if _u(sym.getFileID()) != fid:
+                results.append({"symbol_id": sid, "ok": False,
+                                "error": "symbol is on another folio; "
+                                         "batch one page at a time"})
+                continue
+            pts = _symbol_points(sym)
+            for ln in lines:
+                for end, lx, ly in (("start", ln["x1"], ln["y1"]),
+                                    ("end", ln["x2"], ln["y2"])):
+                    if any(abs(lx - q["x"]) < 0.01 and abs(ly - q["y"]) < 0.01
+                           for q in pts):
+                        dangling.append({"line_id": ln["id"], "end": end,
+                                         "x": lx, "y": ly, "symbol_id": sid})
+            rc = _rc(sym.remove())
+            results.append({"symbol_id": sid, "ok": rc in (0, None), "rc": rc})
+    finally:
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+
+    gone = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return {"ok": not failed, "file_id": fid, "requested": len(ids),
+            "removed": len(gone), "failed": len(failed), "results": results,
+            "steps": steps, "dangling_line_ends": dangling,
+            "note": ("the folio was closed once and reopened once for the "
+                     "whole batch"
+                     + ("" if not dangling else
+                        f"; {len(dangling)} wire end(s) now hang on nothing"))}
