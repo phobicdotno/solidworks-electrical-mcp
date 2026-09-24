@@ -621,12 +621,18 @@ def _symbols_of(app: Any, client: Any, file_id: int, component_id: int) -> list:
 
 
 def _tag_root(tag: str) -> str:
-    """Letters before the number: "K32" -> "K", "N1N15" -> "N", "T58" -> "T".
+    """The device class of a mark: "K32" -> "K", "N1N15" -> "N", "CC_K1" ->
+    "K".
+
+    Delegates to ``_split_mark`` so the two cannot disagree. They used to:
+    this read the leading letters, so a namespaced mark like "CC_K1" gave
+    "CC" here and "K" there. Once audit_tag_roots had filed those components
+    under their real root, every clone and rename of one raised "tag root
+    must stay K" because the new mark still read as "CC".
 
     Case is preserved; compare roots with ``casefold()``.
     """
-    m = re.match(r"([A-Za-z]+)", tag.strip().lstrip("-"))
-    return m.group(1) if m else ""
+    return _split_mark(tag)[0]
 
 
 def _next_free_slot(app: Any, client: Any, file_id: int,
@@ -2494,7 +2500,7 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
         # Only ADJACENT symbols matter: if neighbours clear the label width,
         # everything further along the row does too. Comparing every pair
         # turns one bad row of ten into thirty reports saying the same thing.
-        for _y, band in rows.items():
+        for band in rows.values():
             band.sort(key=lambda o: o["x"])
             for a, b in zip(band, band[1:]):
                 d = abs(b["x"] - a["x"])

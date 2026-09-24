@@ -25,7 +25,9 @@ Cases:
   F. _set_mark puts the printed mark back when setting the root rewrote it
   G. a mark with no number does not call setTagNumber with None
   H. a CC_ relay goes in end to end as a numbered K
-  I. audit_tag_roots reports the CC_ components already in the project as
+  I. _tag_root agrees with _split_mark, so the clone and rename root guards
+     do not refuse a namespaced device
+  J. audit_tag_roots reports the CC_ components already in the project as
      drift, and fix=True files them under K without touching the marks
 
 Run directly:
@@ -177,7 +179,29 @@ check(c.tag == "CC_K105",
 ok("H ok: CC_K105 prints as CC_K105 and files as K / 105", mark)
 
 mark = len(failures)
-# --- I: audit_tag_roots finds and repairs the CC_ components --------------
+# --- I: _tag_root must agree with _split_mark ----------------------------
+# They used to disagree on a namespaced mark: "CC_K1" read as root "CC" here
+# and root "K" there. Once audit_tag_roots had filed those components under
+# their real root, the clone and rename guards compared the stored root "K"
+# against _tag_root("CC_K2") = "CC" and refused every one of them with "tag
+# root must stay K". The two have to be one definition.
+for t in ("CC_K1", "CC_K105", "CC_A1", "K30", "K29B", "N1N15", "T58", "7", ""):
+    check(wf._tag_root(t) == wf._split_mark(t)[0],
+          f"I: _tag_root({t!r})={wf._tag_root(t)!r} disagrees with "
+          f"_split_mark -> {wf._split_mark(t)[0]!r}")
+check(wf._tag_root("CC_K105") == "K",
+      f"I: a namespaced relay is rooted K, got {wf._tag_root('CC_K105')!r}")
+# the rename guard compares these two, so they must match for a CC_ device
+stored_root = wf._split_mark("CC_K1")[0]      # what the repair writes
+new_root = wf._tag_root("CC_K2")              # what rename checks against
+check(stored_root.casefold() == new_root.casefold(),
+      f"I: renaming CC_K1 to CC_K2 must pass the root guard, "
+      f"{stored_root!r} vs {new_root!r}")
+ok("I ok: _tag_root and _split_mark agree, so CC_ renames pass the guard",
+   mark)
+
+mark = len(failures)
+# --- J: audit_tag_roots finds and repairs the CC_ components --------------
 # The ten relays are already in the project filed under root "CC" with no
 # number, created before the namespace rule existed. The audit has to see
 # that as drift and fix=True has to put it right, since that is the repair
@@ -227,24 +251,24 @@ wf._each = lambda client, arr: list(arr or ())
 try:
     r = wf.audit_tag_roots(None, None, tag_contains="CC_")
     check(r["count"] == 5,
-          f"I: expected the 5 CC_ relays to show as drift, got {r['count']}")
+          f"J: expected the 5 CC_ relays to show as drift, got {r['count']}")
     check(all(x["root_mismatch"] and x["number_mismatch"]
               for x in r["components"]),
-          "I: both the root AND the missing number should be reported")
+          "J: both the root AND the missing number should be reported")
     check(not any(x["tag"].startswith("K4") for x in r["components"]),
-          "I: a correctly filed component must not be reported as drift")
+          "J: a correctly filed component must not be reported as drift")
 
     r = wf.audit_tag_roots(None, None, tag_contains="CC_", fix=True)
     check(all(c.root == "K" for c in broken),
-          f"I: fix should file them all under K, got "
+          f"J: fix should file them all under K, got "
           f"{[c.root for c in broken]}")
     check([c.number for c in broken] == [1, 2, 3, 100, 105],
-          f"I: fix should set each number, got {[c.number for c in broken]}")
+          f"J: fix should set each number, got {[c.number for c in broken]}")
     check([c.tag for c in broken]
           == [f"CC_K{n}" for n in (1, 2, 3, 100, 105)],
-          f"I: the printed marks must be untouched, got "
+          f"J: the printed marks must be untouched, got "
           f"{[c.tag for c in broken]}")
-    ok("I ok: audit reports the 5 CC_ relays and fix files them as K 1..105",
+    ok("J ok: audit reports the 5 CC_ relays and fix files them as K 1..105",
        mark)
 finally:
     wf._project = orig_project
