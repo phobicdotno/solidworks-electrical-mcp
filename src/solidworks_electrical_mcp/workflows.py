@@ -2393,13 +2393,22 @@ def move_symbols(app: Any, client: Any, moves: list,
 def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
                         file_id: int | None = None,
                         min_spacing: float | None = None,
+                        symbol_spacing: float | None = None,
                         box: dict | None = None) -> dict:
-    """Report connection points that crowd each other or fall outside the box.
+    """Report geometry that crowds, collides or falls outside the box.
 
-    Two checks, both on the real geometry rather than on intent: connection
-    points of DIFFERENT symbols closer than ``min_spacing`` along a shared
-    row or column, and any connection point or line end outside the drawable
-    box. Reports only; nothing is moved.
+    Three checks, all on the real geometry rather than on intent:
+
+    * connection points of DIFFERENT symbols closer than ``min_spacing``
+      along a shared row or column (dot to dot, 10 mm, is the minimum);
+    * symbols sharing a row whose ORIGINS are closer than
+      ``symbol_spacing`` - a relay's label runs about three grid pitches, so
+      30 mm apart or the labels collide even when the points are legal. Not
+      applied on a 2D cabinet layout, where devices are drawn at their real
+      width and legitimately abut;
+    * any connection point or line end outside the drawable box.
+
+    Reports only; nothing is moved.
     """
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
@@ -2411,6 +2420,7 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
     gap = MIN_POINT_SPACING if min_spacing is None else float(min_spacing)
 
     pts = []
+    origins = []
     for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid))):
         oid = _u(s.getObjectID())
         tag = None
@@ -2418,6 +2428,13 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
             c = _u(cmgr.findEwProjectComponentByID(oid))
             if c is not None:
                 tag = str(_u(c.getTag()))
+        stype = _u(s.getEwSymbolType())
+        if stype not in NON_COMPONENT_SYMBOL_TYPES:
+            origins.append({"symbol_id": _u(s.getID()), "tag": tag,
+                            "name": _u(s.getEwSymbolName()),
+                            "symbol_type": stype,
+                            "x": float(_u(s.getXPosition()) or 0.0),
+                            "y": float(_u(s.getYPosition()) or 0.0)})
         for p in _symbol_points(s):
             pts.append({"symbol_id": _u(s.getID()), "tag": tag,
                         "name": _u(s.getEwSymbolName()), **p})
@@ -2459,11 +2476,44 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
             if outside(x, y):
                 out.append({"kind": f"line {tag}", "line_id": ln["id"],
                             "x": x, "y": y})
+    # A device's LABEL is wider than its connections: a relay contact's text
+    # runs about three grid pitches, so two symbols sharing a row need their
+    # origins that far apart or the labels overlap even though the points are
+    # legally spaced. Every relay row on this project is drawn at 30 mm.
+    #
+    # This applies to schematics, NOT to a 2D cabinet layout, where devices
+    # are drawn at their real width and physically abut - the relays on the
+    # CC100 rail sit 6 mm apart and are correct.
+    origin_gap = (MIN_TEXT_SYMBOL_ORIGIN_SPACING if symbol_spacing is None
+                  else float(symbol_spacing))
+    cramped = []
+    if row.get("file_type_code") != 9 and origin_gap > 0:
+        rows: dict[float, list] = {}
+        for o in origins:
+            rows.setdefault(round(o["y"], 3), []).append(o)
+        # Only ADJACENT symbols matter: if neighbours clear the label width,
+        # everything further along the row does too. Comparing every pair
+        # turns one bad row of ten into thirty reports saying the same thing.
+        for _y, band in rows.items():
+            band.sort(key=lambda o: o["x"])
+            for a, b in zip(band, band[1:]):
+                d = abs(b["x"] - a["x"])
+                if d < origin_gap - _SNAP:
+                    cramped.append({
+                        "gap": round(d, 3), "needed": origin_gap,
+                        "a": {"tag": a["tag"], "symbol_id": a["symbol_id"],
+                              "x": a["x"], "y": a["y"]},
+                        "b": {"tag": b["tag"], "symbol_id": b["symbol_id"],
+                              "x": b["x"], "y": b["y"]}})
+        cramped.sort(key=lambda r: r["gap"])
+
     crowded.sort(key=lambda r: r["gap"])
     return {"folio": row, "min_spacing": gap, "box": bx,
+            "symbol_spacing": origin_gap,
             "crowded_count": len(crowded), "crowded": crowded,
+            "cramped_count": len(cramped), "cramped_labels": cramped,
             "outside_count": len(out), "outside_box": out,
-            "ok": not crowded and not out}
+            "ok": not crowded and not out and not cramped}
 
 
 def add_location(app: Any, client: Any, tag: str, description: str,

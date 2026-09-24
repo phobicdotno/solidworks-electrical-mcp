@@ -989,18 +989,22 @@ def move_symbol(symbol_id: int, dx: float = 0.0, dy: float = 0.0,
 def check_drawing_rules(page: str | int | None = None,
                         file_id: int | None = None,
                         min_spacing: float | None = None,
+                        symbol_spacing: float | None = None,
                         box: dict | None = None) -> dict:
-    """Report crowded connection points and anything outside the drawable box.
+    """Report crowding, colliding labels and anything outside the box.
 
-    Connection points of different symbols sharing a row or column and closer
-    than ``min_spacing``, plus any point or line end outside the box, plus
-    any pair of points that coincide exactly. The default is one grid step,
-    10 mm, which is the dot-to-dot rule. That is NOT the relay spacing: a
-    relay label is three grid pitches wide, so relays need 30 mm between
-    origins, which this check does not model. Reports only.
+    Three checks: connection points of different symbols sharing a row or
+    column closer than ``min_spacing`` (default one grid step, 10 mm - the
+    dot-to-dot rule), including points that coincide exactly; symbols
+    sharing a row whose ORIGINS are closer than ``symbol_spacing`` (default
+    30 mm, because a relay label is three grid pitches wide, so labels
+    collide long before the points do - not applied on a 2D cabinet layout,
+    where devices are drawn at real width and legitimately abut); and any
+    point or line end outside the drawable box. Reports only.
     """
     return _run(wf.check_drawing_rules, page=page, file_id=file_id,
-                min_spacing=min_spacing, box=box)
+                min_spacing=min_spacing, symbol_spacing=symbol_spacing,
+                box=box)
 
 
 @mcp.tool
