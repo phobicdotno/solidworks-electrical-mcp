@@ -11,9 +11,9 @@ passed; pass --live to include them.
 Several of the others also skip at runtime when the application is not
 attached, and they exit 0 when they do - so exit code alone reports green for
 a test that checked nothing. Their SKIP marker is read out of the output and
-reported as a skip. Four tests genuinely run with no application:
-test_batch_symbol_ops, test_page_ink, test_stale_factory_retry and
-test_stdout_isolation.
+reported as a skip. Six tests genuinely run with no application:
+test_batch_symbol_ops, test_drawing_rules, test_page_ink, test_tag_marks,
+test_stale_factory_retry and test_stdout_isolation.
 
     .venv/Scripts/python.exe tests/run_all.py
     .venv/Scripts/python.exe tests/run_all.py --live
