@@ -166,8 +166,9 @@ at runtime when SOLIDWORKS Electrical is not attached, and they exit 0 when
 they do, so the exit code reports a pass for a test that checked nothing. The
 runner reads the SKIP marker out of the output and reports it as a skip.
 
-Only three tests genuinely run with no application: `test_batch_symbol_ops`
-(the folio close/open batching), `test_stale_factory_retry` (cached COM
+Four tests genuinely run with no application: `test_batch_symbol_ops` (the
+folio close/open batching), `test_page_ink` (measuring what a sheet really
+draws, against synthetic A3 sheets), `test_stale_factory_retry` (cached COM
 objects outliving the program) and `test_stdout_isolation`. Everything else
 needs the program running with a project open, which the two `--live` tests
 require outright.
