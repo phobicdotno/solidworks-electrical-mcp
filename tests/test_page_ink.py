@@ -21,6 +21,9 @@ Cases:
   E. title-block geometry below the box is ignored
   F. an empty sheet reports no extent rather than crashing
   G. a 260 mm enclosure is measured as a device, not filtered as a frame
+  H. title-block furniture around the box is ignored however short its rules
+  I. a device CROSSING the boundary is still reported, so the exclusion does
+     not swallow what the tool exists to find
 
 Run directly:
     .venv/Scripts/python.exe tests/test_page_ink.py
@@ -168,6 +171,41 @@ check(e is not None and near(e["x_max"] - e["x_min"], 260.1),
       f"G: the 260 mm enclosure must be measured, not filtered, got {e}")
 check(r["inside"], f"G: the enclosure sits inside the box, got {r}")
 ok(f"G ok: enclosure measured, {e['x_max'] - e['x_min']:.1f} mm wide", mark)
+
+mark = len(failures)
+# --- H: title-block furniture anywhere around the box is ignored ----------
+# Shape alone does not catch this. A real sheet's title block is full of
+# SHORT thin rules, well under max_frame_mm, sitting to the right of the box
+# and above it. On the real page 102 export they dragged the measured extent
+# out to the paper edge (x 410.44, y 281.41) and reported an overflow on
+# every side of a page whose devices were nowhere near those edges.
+device = (100.0, 120.0, 140.0, 160.0)
+furniture = [
+    (276.0, 22.0, 391.0, 25.5),     # title block rules, below the box
+    (393.0, 25.0, 407.5, 35.0),     # revision cells, below and right
+    (405.0, 250.0, 410.5, 281.5),   # corner marks, above and right
+    (26.5, 250.0, 27.1, 281.5),     # corner marks, above and left
+]
+r = run([device, *furniture])
+e = r["extent"]
+check(r["inside"], f"H: furniture outside the box must not overflow, got {r}")
+check(near(e["x_min"], 100.0) and near(e["x_max"], 140.0)
+      and near(e["y_min"], 120.0) and near(e["y_max"], 160.0),
+      f"H: the extent should be the device alone, got {e}")
+check(r["frame_paths_ignored"] == len(furniture),
+      f"H: expected {len(furniture)} frame paths ignored, got "
+      f"{r['frame_paths_ignored']}")
+ok(f"H ok: {r['frame_paths_ignored']} pieces of furniture ignored, "
+   f"extent is the device", mark)
+
+mark = len(failures)
+# --- I: a device that CROSSES the boundary is still caught ----------------
+# The exclusion must not swallow the thing the tool exists to find.
+r = run([(20.0, 100.0, 120.0, 200.0), *furniture])
+check(not r["inside"], "I: a device crossing the boundary must be reported")
+check(near(r["overflow"].get("left"), 30.0),
+      f"I: expected 30 mm of left overflow, got {r.get('overflow')}")
+ok(f"I ok: crossing device still reported, overflow {r['overflow']}", mark)
 
 print()
 if failures:

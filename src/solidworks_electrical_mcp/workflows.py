@@ -2889,11 +2889,14 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
     box passes that check while the exported sheet clearly shows it hanging
     out. This exports the folio and measures the real vector ink instead.
 
-    Frame and title-block geometry is excluded: any path longer than
-    ``max_frame_mm`` that is also thinner than ``frame_thickness_mm`` (a
-    border rule is long AND thin - length alone would discard a large device,
-    and the AN-2823-AB enclosure is 260 mm wide), and anything lying wholly
-    below the box. What remains is device geometry.
+    Frame and title-block geometry is excluded two ways: any path longer
+    than ``max_frame_mm`` that is also thinner than ``frame_thickness_mm``
+    (a border rule is long AND thin - length alone would discard a large
+    device, and the AN-2823-AB enclosure is 260 mm wide), and anything lying
+    WHOLLY outside the drawable box. The second is what actually works on a
+    real sheet: the title block is full of short thin rules that no shape
+    test catches, and they dragged the measured extent out to the paper edge.
+    Device geometry that hangs out of the box still crosses it.
     """
     try:
         import fitz
@@ -2929,7 +2932,7 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
         with contextlib.suppress(OSError):
             os.remove(tmp)
 
-    ink = []
+    ink, framish = [], 0
     for r in rects:
         long_mm = max(r.width, r.height) / s
         short_mm = min(r.width, r.height) / s
@@ -2937,11 +2940,22 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
         # a genuinely large device: the AN-2823-AB enclosure is 260 mm wide.
         if long_mm > max_frame_mm and short_mm < frame_thickness_mm:
             continue
-        if (h_pt - r.y0) / s < bx["y_min"]:
-            continue                      # wholly below the drawable box
+        x0, x1 = r.x0 / s, r.x1 / s
+        y0, y1 = (h_pt - r.y1) / s, (h_pt - r.y0) / s
+        # Anything lying WHOLLY outside the drawable box is frame furniture:
+        # the title block, its rules and the corner marks. Shape alone does
+        # not separate those - the title block is full of short thin rules
+        # well under max_frame_mm, and on a real sheet they dragged the
+        # measured extent out to the paper edge (x 410, y 281) and reported
+        # an overflow on every page. Device geometry that hangs out of the
+        # box still CROSSES it, which is what is being looked for.
+        if x0 > bx["x_max"] or x1 < bx["x_min"]                 or y0 > bx["y_max"] or y1 < bx["y_min"]:
+            framish += 1
+            continue
         ink.append(r)
     if not ink:
         return {"ok": True, "folio": row, "box": bx, "paths": 0,
+                "frame_paths_ignored": framish,
                 "extent": None, "inside": True, "overflow": {}}
 
     x0 = min(r.x0 for r in ink) / s
@@ -2958,6 +2972,7 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
     if y1 > bx["y_max"] + _SNAP:
         over["top"] = round(y1 - bx["y_max"], 2)
     return {"ok": True, "folio": row, "box": bx, "paths": len(ink),
+            "frame_paths_ignored": framish,
             "extent": {"x_min": round(x0, 2), "x_max": round(x1, 2),
                        "y_min": round(y0, 2), "y_max": round(y1, 2)},
             "inside": not over, "overflow": over,
