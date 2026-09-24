@@ -1011,7 +1011,9 @@ def check_drawing_rules(page: str | int | None = None,
 def check_page_ink(page: str | int | None = None,
                    file_id: int | None = None,
                    box: dict | None = None,
-                   sheet_width_mm: float | None = None) -> dict:
+                   sheet_width_mm: float | None = None,
+                   max_frame_mm: float = 250.0,
+                   frame_thickness_mm: float = 3.0) -> dict:
     """Measure what is actually DRAWN on a folio and flag ink outside the box.
 
     Use this alongside ``check_drawing_rules``, which only sees connection
@@ -1023,9 +1025,15 @@ def check_page_ink(page: str | int | None = None,
 
     Returns the drawn extent in page millimetres plus, per side, how far it
     overflows the box. Requires PyMuPDF.
+
+    Frame geometry is anything longer than ``max_frame_mm`` that is also
+    thinner than ``frame_thickness_mm`` - a border rule is long AND thin.
+    Raise ``max_frame_mm`` on a sheet carrying a device bigger than it (the
+    AN-2823-AB enclosure is 260 mm wide) if that device is being skipped.
     """
     return _run(wf.check_page_ink, page=page, file_id=file_id, box=box,
-                sheet_width_mm=sheet_width_mm)
+                sheet_width_mm=sheet_width_mm, max_frame_mm=max_frame_mm,
+                frame_thickness_mm=frame_thickness_mm)
 
 
 @mcp.tool
