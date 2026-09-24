@@ -3085,3 +3085,159 @@ def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
                      "whole batch"
                      + ("" if not dangling else
                         f"; {len(dangling)} wire end(s) now hang on nothing"))}
+
+
+def add_texts(app: Any, client: Any, texts: list[dict],
+              page: str | int | None = None, file_id: int | None = None,
+              box: dict | None = None, dry_run: bool = True) -> dict:
+    """Put several free texts on ONE page, closing the folio only once.
+
+    The batch counterpart to ``add_text``. Annotating a page - terminal
+    numbers, wire specs, circuit numbers - runs to dozens of texts, and one
+    editor close/open cycle each is what takes SOLIDWORKS Electrical down.
+
+    Each entry is a dict with ``text``, ``x`` and ``y``, and optionally
+    ``rotation``. Every position is checked against the drawable box BEFORE
+    the folio is touched, so a bad one cannot leave the page half annotated.
+    """
+    if not texts:
+        return {"ok": False, "error": "no texts given"}
+    bx = {**GO_BOX, **(box or {})}
+    f = find_folio(app, client, page=page, file_id=file_id)
+    row = _folio_row(f)
+
+    prepared = []
+    for i, t in enumerate(texts):
+        try:
+            body = str(t["text"])
+            x, y = float(t["x"]), float(t["y"])
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"ok": False, "folio": row,
+                    "error": f"text {i} is malformed: {exc}"}
+        if not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
+                and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP):
+            return {"ok": False, "folio": row,
+                    "error": f"text {i} at ({x}, {y}) is outside the "
+                             f"drawable box {bx}"}
+        prepared.append((body, x, y, float(t.get("rotation") or 0.0)))
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "folio": row,
+                "count": len(prepared),
+                "planned": [{"text": b, "x": x, "y": y, "rotation": r}
+                            for b, x, y, r in prepared]}
+
+    was_open = row["is_open"]
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "folio": row, "steps": steps,
+                    "error": "could not close the folio"}
+    results = []
+    try:
+        for body, x, y, rot in prepared:
+            t = _u(f.newEwProjectMultilingualText())
+            if t is None:
+                results.append({"text": body, "ok": False,
+                                "error": "newEwProjectMultilingualText "
+                                         "returned NULL"})
+                continue
+            # Content and position go in BEFORE the insert: inserting an
+            # empty text answers EW_BAD_INPUTS (2) and leaves id -1.
+            st = {"setText": _rc(t.setText(LANG, body)),
+                  "setXPosition": _rc(t.setXPosition(x)),
+                  "setYPosition": _rc(t.setYPosition(y))}
+            if rot:
+                st["setRotationAngle"] = _rc(t.setRotationAngle(rot))
+            st["insert"] = _rc(t.insert())
+            st["update"] = _rc(t.update())
+            bad = {k: v for k, v in st.items() if v not in (0, None)}
+            tid = _u(t.getID())
+            results.append({"text": body, "x": x, "y": y,
+                            "text_id": tid, "bad_steps": bad,
+                            "ok": not bad and isinstance(tid, int) and tid > 0})
+    finally:
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+
+    added = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return {"ok": not failed, "dry_run": False, "folio": row,
+            "requested": len(prepared), "added": len(added),
+            "failed": len(failed), "results": results, "steps": steps,
+            "undo": "remove texts "
+                    + ", ".join(str(r["text_id"]) for r in added),
+            "note": "the folio was closed once and reopened once for the "
+                    "whole batch"}
+
+
+def remove_texts(app: Any, client: Any, text_ids: list[int] | None = None,
+                 page: str | int | None = None, file_id: int | None = None,
+                 all_on_page: bool = False) -> dict:
+    """Delete several free texts, closing the folio only once.
+
+    The batch counterpart to ``remove_text``, which besides cycling the
+    editor per text also scans the WHOLE project's text array to resolve one
+    id - a project scan per text when called in a loop. This resolves every
+    id from a single folio-scoped fetch.
+
+    Give either ``text_ids``, or ``all_on_page=True`` with a page to clear
+    every text off a folio.
+    """
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectMultilingualTextManager())
+    f = find_folio(app, client, page=page, file_id=file_id)
+    fid = _u(f.getID())
+    # One scoped fetch for the whole batch, the same reason as the lines.
+    arr, scoped = None, True
+    try:
+        arr = _u(mgr.getEwProjectMultilingualTextByFileIDArray(int(fid)))
+    except Exception:  # noqa: BLE001
+        scoped = False
+        arr = _u(mgr.getEwProjectMultilingualTextArray())
+    on_page = {}
+    for t in _each(client, arr or ()):
+        if not scoped and _u(t.getFileID()) != fid:
+            continue
+        on_page[_u(t.getID())] = t
+
+    if all_on_page:
+        ids = list(on_page)
+    else:
+        ids = [int(i) for i in (text_ids or [])]
+        if not ids:
+            return {"ok": False, "error": "give text_ids or all_on_page=True"}
+    if not ids:
+        return {"ok": True, "file_id": fid, "requested": 0, "removed": 0,
+                "results": [], "note": "nothing to remove"}
+
+    was_open = bool(_u(f.isOpen()))
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "file_id": fid, "steps": steps,
+                    "error": "could not close the folio"}
+    results = []
+    try:
+        for tid in ids:
+            t = on_page.get(tid)
+            if t is None:
+                results.append({"text_id": tid, "ok": False,
+                                "error": "no such text on this folio; "
+                                         "batch one page at a time"})
+                continue
+            rc = _rc(t.remove())
+            results.append({"text_id": tid, "ok": rc in (0, None), "rc": rc})
+    finally:
+        if was_open:
+            steps["folio.open"] = _rc(f.open())
+
+    gone = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return {"ok": not failed, "file_id": fid, "requested": len(ids),
+            "removed": len(gone), "failed": len(failed), "results": results,
+            "steps": steps,
+            "note": "the folio was closed once and reopened once for the "
+                    "whole batch"}

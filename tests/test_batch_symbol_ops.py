@@ -21,6 +21,10 @@ Cases:
   E. remove_symbols(all_on_page) -> one close and one open for the whole page
   F. remove_symbols spanning two folios -> the foreign id is reported, not
      crashed on, and the rest still go
+  G. thirty texts in one cycle (annotating a page is the worst offender)
+  H. a text outside the box -> refused before the folio is touched
+  I. remove_texts(all_on_page) -> one cycle AND one scoped fetch, where
+     remove_text scanned the whole project per text
 
 Run directly:
     .venv/Scripts/python.exe tests/test_batch_symbol_ops.py
@@ -98,6 +102,14 @@ class FakeFolio:
     def __init__(self, fid=7, is_open=True):
         self.fid, self._open, self.log = fid, is_open, []
         self.made, self._next = [], 100
+        self.texts, self._next_text = [], 500
+
+    def newEwProjectMultilingualText(self):
+        self._next_text += 1
+        t = FakeText(self._next_text, self)
+        self.texts.append(t)
+        self.log.append(("text", self._next_text))
+        return t
 
     def getID(self):
         return self.fid
@@ -131,6 +143,64 @@ class FakeFolio:
         return self.log.count("open")
 
 
+class FakeText:
+    def __init__(self, tid, folio):
+        self.tid, self.folio = tid, folio
+        self.body = ""
+        self.x = self.y = 0.0
+
+    def setText(self, lang, v):
+        self.body = v
+        return 0
+
+    def setXPosition(self, v):
+        self.x = v
+        return 0
+
+    def setYPosition(self, v):
+        self.y = v
+        return 0
+
+    def setRotationAngle(self, v):
+        return 0
+
+    def insert(self):
+        return 0
+
+    def update(self):
+        return 0
+
+    def getID(self):
+        return self.tid
+
+    def getText(self, lang):
+        return self.body
+
+    def getFileID(self):
+        return self.folio.fid
+
+    def remove(self):
+        self.folio.log.append(("remove_text", self.tid))
+        return 0
+
+
+class FakeTextMgr:
+    """Counts how the batch resolves ids: scoped fetch vs project-wide scan."""
+
+    def __init__(self, texts):
+        self.texts = list(texts)
+        self.scoped_fetches = 0
+        self.project_scans = 0
+
+    def getEwProjectMultilingualTextByFileIDArray(self, fid):
+        self.scoped_fetches += 1
+        return [t for t in self.texts if t.folio.fid == fid]
+
+    def getEwProjectMultilingualTextArray(self):
+        self.project_scans += 1
+        return list(self.texts)
+
+
 class FakeComponent:
     def __init__(self, tag):
         self.tag = tag
@@ -154,11 +224,14 @@ class FakeSymMgr:
 
 
 class FakeProject:
-    def __init__(self, mgr):
-        self.mgr = mgr
+    def __init__(self, mgr, text_mgr=None):
+        self.mgr, self.text_mgr = mgr, text_mgr
 
     def getEwProjectSymbolManager(self):
         return self.mgr
+
+    def getEwProjectMultilingualTextManager(self):
+        return self.text_mgr
 
 
 ORIGINALS = {name: getattr(wf, name) for name in
@@ -285,6 +358,54 @@ try:
           "F: the foreign id must be named, not crashed on")
     check(folio6.closes == 1 and folio6.opens == 1, "F: still one cycle")
     ok("F ok: foreign id reported, the other two removed, one cycle", mark)
+
+    mark = len(failures)
+    # --- G: thirty texts in one cycle ------------------------------------
+    folio7 = FakeFolio()
+    patch(folio7)
+    notes = [{"text": f"{n}", "x": 100.0 + n, "y": 120.0} for n in range(30)]
+    r = wf.add_texts(None, None, texts=notes, page="102", dry_run=False)
+    check(r["ok"], f"G: text batch should succeed, got {r.get('error')}")
+    check(r["added"] == 30, f"G: expected 30 added, got {r.get('added')}")
+    check(folio7.closes == 1 and folio7.opens == 1,
+          f"G: annotating a page must be ONE cycle, got "
+          f"{folio7.closes} close / {folio7.opens} open")
+    ok(f"G ok: 30 texts, {folio7.closes} close / {folio7.opens} open", mark)
+
+    mark = len(failures)
+    # --- H: a text outside the box aborts before the folio is touched ----
+    folio8 = FakeFolio()
+    patch(folio8)
+    r = wf.add_texts(None, None, page="102", dry_run=False,
+                     texts=[{"text": "ok", "x": 100.0, "y": 120.0},
+                            {"text": "off sheet", "x": 900.0, "y": 120.0}])
+    check(not r["ok"], "H: a text outside the box must fail the batch")
+    check(folio8.closes == 0 and not folio8.texts,
+          f"H: nothing may be written when validation fails; "
+          f"closes={folio8.closes} made={len(folio8.texts)}")
+    ok("H ok: out-of-box text refused before the folio was touched", mark)
+
+    mark = len(failures)
+    # --- I: clearing texts is one cycle AND one scoped fetch -------------
+    folio9 = FakeFolio()
+    patch(folio9)
+    txts = [FakeText(400 + i, folio9) for i in range(20)]
+    tmgr = FakeTextMgr(txts)
+    wf._project = lambda app: FakeProject(None, tmgr)
+    r = wf.remove_texts(None, None, page="102", all_on_page=True)
+    check(r["ok"], f"I: clear-texts should succeed, got {r.get('error')}")
+    check(r["removed"] == 20, f"I: expected 20 removed, got {r.get('removed')}")
+    check(folio9.closes == 1 and folio9.opens == 1,
+          f"I: clearing texts must be ONE cycle, got "
+          f"{folio9.closes} close / {folio9.opens} open")
+    # remove_text resolved each id by scanning the whole project; the batch
+    # must fetch once for the page however many texts it deletes.
+    check(tmgr.scoped_fetches == 1 and tmgr.project_scans == 0,
+          f"I: expected 1 scoped fetch and 0 project scans, got "
+          f"{tmgr.scoped_fetches} / {tmgr.project_scans}")
+    ok(f"I ok: cleared 20 texts, {folio9.closes} cycle, "
+       f"{tmgr.scoped_fetches} fetch, {tmgr.project_scans} project scans",
+       mark)
 finally:
     unpatch()
 

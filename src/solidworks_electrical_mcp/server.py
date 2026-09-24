@@ -43,7 +43,7 @@ Task-level tools (workflows.py): reconnect, project_info, list_folios,
     add_location, delete_location, attach_manufacturer_part,
     place_symbol, place_symbols, remove_symbol, remove_symbols,
     move_symbols,
-    add_text, list_texts, remove_text,
+    add_text, add_texts, list_texts, remove_text, remove_texts,
     delete_component.
 """
 
@@ -82,8 +82,9 @@ mcp = FastMCP(
         "the library does not carry) · place_symbol/place_symbols (BATCH: one folio close for the "
         "whole page, strongly preferred)/remove_symbol/"
         "move_symbol/move_symbols (draw an existing component, and move "
-        "one WITH its wires; prefer the batch) · add_text/list_texts/"
-        "remove_text · check_drawing_rules (crowding and the drawable "
+        "one WITH its wires; prefer the batch) · add_text/add_texts/list_texts/"
+        "remove_text/remove_texts (BATCH forms preferred: one folio close "
+        "for the page) · check_drawing_rules (crowding and the drawable "
         "box) · check_page_ink (what is really DRAWN, which catches a "
         "footprint hanging outside the box) · clone_component (\"on sheet 10 clone K32 "
         "into K33\"; dry_run first) · delete_component · reconnect (drop "
@@ -1054,6 +1055,35 @@ def remove_symbols(symbol_ids: list[int] | None = None,
     down.
     """
     return _run(wf.remove_symbols, symbol_ids=symbol_ids, page=page,
+                file_id=file_id, all_on_page=all_on_page)
+
+
+@mcp.tool
+def add_texts(texts: list[dict], page: str | int | None = None,
+              file_id: int | None = None, box: dict | None = None,
+              dry_run: bool = True) -> dict:
+    """Put several free texts on ONE page, closing the folio only once.
+
+    PREFER THIS over repeated add_text calls. Annotating a page runs to
+    dozens of texts and one editor cycle each can take SOLIDWORKS Electrical
+    down. Each entry is a dict with text, x, y and optionally rotation.
+    """
+    return _run(wf.add_texts, texts=texts, page=page, file_id=file_id,
+                box=box, dry_run=dry_run)
+
+
+@mcp.tool
+def remove_texts(text_ids: list[int] | None = None,
+                 page: str | int | None = None,
+                 file_id: int | None = None,
+                 all_on_page: bool = False) -> dict:
+    """Delete several free texts, closing the folio only once.
+
+    PREFER THIS over repeated remove_text calls, which also cost a
+    project-wide scan per text. Pass all_on_page=True with a page to clear
+    every text off a folio.
+    """
+    return _run(wf.remove_texts, text_ids=text_ids, page=page,
                 file_id=file_id, all_on_page=all_on_page)
 
 
