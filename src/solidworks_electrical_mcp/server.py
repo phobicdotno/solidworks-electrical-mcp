@@ -56,6 +56,7 @@ from fastmcp import FastMCP
 
 from . import catalog as catalog_mod
 from . import com as com_mod
+from . import projects as pj
 from . import workflows as wf
 
 mcp = FastMCP(
@@ -650,6 +651,139 @@ def reconnect() -> dict:
     """
     com_mod.app().disconnect()
     return connect()
+
+
+# --------------------------------------------------------------------------
+# Project lifecycle. Every other tool acts on "the open project"; these pick
+# which project that is, and create, archive or retire one.
+
+
+@mcp.tool
+def list_projects(name_contains: str | None = None,
+                  project_type: str | None = "project") -> dict:
+    """Every project in the environment, open or not, newest change first.
+
+    Works with nothing open, so this is where a session starts. Each row:
+    id, name, description, customer, contract_number, created_by,
+    modified_by, modification_date, open_by_me, open_by_another, is_current.
+    ``project_type`` filters "project" vs "macro"; pass null for both.
+    """
+    return _run(pj.list_projects, name_contains=name_contains,
+                project_type=project_type)
+
+
+@mcp.tool
+def open_project(project_id: int | None = None,
+                 name: str | None = None) -> dict:
+    """Open a project and make it the one every other tool acts on.
+
+    Give an id from ``list_projects``, or a name - exact first, then a unique
+    substring, so "65021" resolves without the full mark. Refuses a project
+    another user holds open.
+    """
+    return _run(pj.open_project, project_id=project_id, name=name)
+
+
+@mcp.tool
+def close_project(project_id: int | None = None,
+                  name: str | None = None) -> dict:
+    """Close a project; with no argument, close whichever one is current.
+
+    Closing is how SOLIDWORKS commits a project's pending state and releases
+    it for other users, so it belongs at the end of a session rather than
+    being left to the GUI.
+    """
+    return _run(pj.close_project, project_id=project_id, name=name)
+
+
+@mcp.tool
+def list_project_templates() -> dict:
+    """The template names ``create_project`` accepts (ANSI, IEC, JIS ...)."""
+    return _run(pj.list_project_templates)
+
+
+@mcp.tool
+def create_project(name: str, template: str | None = None,
+                   description: str | None = None,
+                   customer: str | None = None,
+                   contract_number: str | None = None,
+                   open_after: bool = False) -> dict:
+    """Create a project, optionally from one of the shipped templates.
+
+    The template carries the drawing standard - symbol set, wire styles,
+    title blocks, page format - so a project made without one starts bare and
+    has to be configured by hand. Refuses a name that already exists.
+    """
+    return _run(pj.create_project, name=name, template=template,
+                description=description, customer=customer,
+                contract_number=contract_number, open_after=open_after)
+
+
+@mcp.tool
+def delete_project(project_id: int, confirm_name: str) -> dict:
+    """Permanently remove a project. ``confirm_name`` must match its name.
+
+    There is no undo: drawings, components and the database row all go.
+    Typing the name back is what stops a stale id deleting the wrong project.
+    """
+    return _run(pj.delete_project, project_id=project_id,
+                confirm_name=confirm_name)
+
+
+@mcp.tool
+def archive_project(output_path: str, project_id: int | None = None,
+                    name: str | None = None,
+                    with_dependencies: bool = True) -> dict:
+    """Write a project out as a .tewzip archive (default: the open one).
+
+    ``with_dependencies`` also packs the library content the project
+    references (symbols, parts, title blocks), which is what makes the
+    archive restorable on a machine with a different environment.
+    """
+    return _run(pj.archive_project, output_path=output_path,
+                project_id=project_id, name=name,
+                with_dependencies=with_dependencies)
+
+
+@mcp.tool
+def unarchive_project(archive_path: str,
+                      with_dependencies: bool = True) -> dict:
+    """Restore a .tewzip archive and report which project it became."""
+    return _run(pj.unarchive_project, archive_path=archive_path,
+                with_dependencies=with_dependencies)
+
+
+@mcp.tool
+def project_properties(project_id: int | None = None,
+                       name: str | None = None,
+                       description: str | None = None,
+                       customer: str | None = None,
+                       customer_address1: str | None = None,
+                       customer_address2: str | None = None,
+                       customer_address3: str | None = None,
+                       drawing_office: str | None = None,
+                       drawing_office_address1: str | None = None,
+                       drawing_office_address2: str | None = None,
+                       drawing_office_address3: str | None = None,
+                       contract_number: str | None = None,
+                       extern_id: str | None = None) -> dict:
+    """Read, and optionally set, the title-block fields of a project.
+
+    Anything left null is read rather than written. These feed the title
+    block, so run ``regenerate_title_blocks`` afterwards to see a change on
+    the sheets. The project name is not settable here - use
+    ``rename_project``.
+    """
+    return _run(pj.project_properties, project_id=project_id, name=name,
+                description=description, customer=customer,
+                customer_address1=customer_address1,
+                customer_address2=customer_address2,
+                customer_address3=customer_address3,
+                drawing_office=drawing_office,
+                drawing_office_address1=drawing_office_address1,
+                drawing_office_address2=drawing_office_address2,
+                drawing_office_address3=drawing_office_address3,
+                contract_number=contract_number, extern_id=extern_id)
 
 
 @mcp.tool

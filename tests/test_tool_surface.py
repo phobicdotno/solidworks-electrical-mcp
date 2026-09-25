@@ -45,10 +45,20 @@ def ok(msg: str, mark: int) -> None:
         print(msg)
 
 
-wf_src = (SRC / "workflows.py").read_text(encoding="utf-8")
+# The tool surface is fed by more than one workflow module, each imported
+# under its own alias in server.py. Auditing only workflows.py would let a
+# whole module of tools drift unchecked.
+MODULES = {"wf": "workflows.py", "pj": "projects.py"}
+
 sv_src = (SRC / "server.py").read_text(encoding="utf-8")
-wf_tree, sv_tree = ast.parse(wf_src), ast.parse(sv_src)
-wf_funcs = {n.name: n for n in wf_tree.body if isinstance(n, ast.FunctionDef)}
+sv_tree = ast.parse(sv_src)
+
+trees = {alias: ast.parse((SRC / fn).read_text(encoding="utf-8"))
+         for alias, fn in MODULES.items()}
+# alias -> {name: FunctionDef}, plus a flat view for the wrapper checks.
+mod_funcs = {alias: {n.name: n for n in tree.body
+                     if isinstance(n, ast.FunctionDef)}
+             for alias, tree in trees.items()}
 
 
 def arg_names(fn, skip=0):
@@ -67,10 +77,12 @@ tools = [n for n in sv_tree.body if isinstance(n, ast.FunctionDef)
 check(len(tools) > 30, f"expected a substantial tool surface, got {len(tools)}")
 
 mark = len(failures)
-# --- A: nothing in workflows is stranded ----------------------------------
-public = [n.name for n in wf_tree.body
-          if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")]
-stranded = [f for f in public if f"wf.{f}" not in sv_src]
+# --- A: nothing in a workflow module is stranded --------------------------
+public, stranded = [], []
+for alias, funcs in mod_funcs.items():
+    names = [n for n in funcs if not n.startswith("_")]
+    public += names
+    stranded += [f"{alias}.{n}" for n in names if f"{alias}.{n}" not in sv_src]
 check(not stranded,
       f"A: these workflows are not reachable through any tool: {stranded}")
 ok(f"A ok: all {len(public)} workflow functions are exposed", mark)
@@ -81,11 +93,12 @@ mark = len(failures)
 EXEMPT = {"dry_run"}
 dropped_any, unreachable_any = [], []
 for tool in tools:
-    target = None
+    target = target_alias = None
     for sub in ast.walk(tool):
         if (isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
-                and sub.value.id == "wf" and sub.attr in wf_funcs):
-            target = sub.attr
+                and sub.value.id in mod_funcs
+                and sub.attr in mod_funcs[sub.value.id]):
+            target_alias, target = sub.value.id, sub.attr
             break
     if target is None:
         continue                      # not a workflow wrapper
@@ -94,7 +107,7 @@ for tool in tools:
                  if isinstance(sub, ast.Call)
                  for kw in sub.keywords if kw.arg}
     # skip app and client, which the COM layer supplies
-    accepted = set(arg_names(wf_funcs[target], skip=2))
+    accepted = set(arg_names(mod_funcs[target_alias][target], skip=2))
 
     dropped = sorted(declared - forwarded - EXEMPT)
     if dropped:
@@ -103,7 +116,7 @@ for tool in tools:
     unreachable = sorted(accepted - declared - EXEMPT)
     if unreachable:
         unreachable_any.append(f"{tool.name} cannot reach "
-                               f"wf.{target}{tuple(unreachable)}")
+                               f"{target_alias}.{target}{tuple(unreachable)}")
 
 check(not dropped_any,
       "B: parameters declared but silently ignored:\n    "
