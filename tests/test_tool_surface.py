@@ -49,7 +49,7 @@ def ok(msg: str, mark: int) -> None:
 # under its own alias in server.py. Auditing only workflows.py would let a
 # whole module of tools drift unchecked.
 MODULES = {"wf": "workflows.py", "pj": "projects.py",
-           "lib": "library.py"}
+           "lib": "library.py", "auto": "automation.py"}
 
 sv_src = (SRC / "server.py").read_text(encoding="utf-8")
 sv_tree = ast.parse(sv_src)

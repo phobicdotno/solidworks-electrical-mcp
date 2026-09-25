@@ -54,6 +54,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from . import automation as auto
 from . import catalog as catalog_mod
 from . import com as com_mod
 from . import library as lib
@@ -652,6 +653,225 @@ def reconnect() -> dict:
     """
     com_mod.app().disconnect()
     return connect()
+
+
+# --------------------------------------------------------------------------
+# Project-wide operations: numbering, arrows, terminal-strip drawings,
+# reports, DWG export, and the wiring list. Each is a bulk edit with no undo,
+# so each takes an explicit action and an explicit selection - try it on one
+# page before turning it loose on the whole project.
+
+
+@mcp.tool
+def number_wires(action: str = "new", selection: str = "all",
+                 book_id: int | None = None, folder_id: int | None = None,
+                 pages: list | None = None,
+                 file_ids: list[int] | None = None,
+                 renumber_manual: bool = False,
+                 reset_position: bool = False) -> dict:
+    """Run the wire numbering pass.
+
+    ``action``: "new" numbers only wires that have none (the safe one),
+    "new_and_recalculate" also recomputes existing marks, "renumber" throws
+    every wire number away and starts again, "remove" strips them.
+
+    ``selection``: "all", "book" (+book_id), "folder" (+folder_id), or
+    "folios" (+pages or file_ids). ``renumber_manual`` decides whether a
+    number somebody typed by hand is fair game; it is off by default.
+    """
+    return _run(auto.number_wires, action=action, selection=selection,
+                book_id=book_id, folder_id=folder_id, pages=pages,
+                file_ids=file_ids, renumber_manual=renumber_manual,
+                reset_position=reset_position)
+
+
+@mcp.tool
+def number_marks(action: str = "update",
+                 object_types: list[str] | None = None,
+                 start_number: int | None = None,
+                 step_increment: int | None = None,
+                 renumber_manual: bool = False) -> dict:
+    """Run the component-mark numbering pass.
+
+    ``action`` is "update" (fill in what has no mark) or "renumber" (assign
+    every mark again). A renumber rewrites the tags the whole project
+    cross-references.
+
+    ``object_types``: component (the default), cable, terminal,
+    terminal_strip, location, function, harness.
+    """
+    return _run(auto.number_marks, action=action, object_types=object_types,
+                start_number=start_number, step_increment=step_increment,
+                renumber_manual=renumber_manual)
+
+
+@mcp.tool
+def generate_arrows(action: str = "auto_connect", selection: str = "all",
+                    book_id: int | None = None,
+                    folder_id: int | None = None, pages: list | None = None,
+                    file_ids: list[int] | None = None,
+                    origin_symbol: str | None = None,
+                    destination_symbol: str | None = None,
+                    replace_manual: bool = False) -> dict:
+    """Place, refresh or strip the origin/destination arrows.
+
+    Arrows are how a wire leaving one sheet is picked up on another, so
+    "auto_connect" is what turns a set of drawn pages into a wired project.
+    "reconnect" refreshes them; "remove" breaks those links.
+    """
+    return _run(auto.generate_arrows, action=action, selection=selection,
+                book_id=book_id, folder_id=folder_id, pages=pages,
+                file_ids=file_ids, origin_symbol=origin_symbol,
+                destination_symbol=destination_symbol,
+                replace_manual=replace_manual)
+
+
+@mcp.tool
+def optimize_wire_order(selection: str = "all", book_id: int | None = None,
+                        folder_id: int | None = None,
+                        pages: list | None = None,
+                        file_ids: list[int] | None = None,
+                        remove_wire_cable_cores: bool = False,
+                        remove_bridges: bool = False,
+                        replace_manual: bool = False) -> dict:
+    """Recompute the connection order within each equipotential.
+
+    This decides which terminal a wire physically lands on when several share
+    a potential, which is what makes a from-to wiring list buildable rather
+    than merely correct.
+    """
+    return _run(auto.optimize_wire_order, selection=selection,
+                book_id=book_id, folder_id=folder_id, pages=pages,
+                file_ids=file_ids,
+                remove_wire_cable_cores=remove_wire_cable_cores,
+                remove_bridges=remove_bridges,
+                replace_manual=replace_manual)
+
+
+@mcp.tool
+def generate_terminal_strip_drawings(component_ids: list[int] | None = None,
+                                     book_id: int | None = None,
+                                     keep_existing: bool = True) -> dict:
+    """Draw the terminal-strip sheets for the strips in the project.
+
+    A strip is a part-less parent component carrying numbered children, one
+    per terminal, so pass the parents (CC_T1, CC_T2) and not their children.
+    ``keep_existing=False`` deletes and regenerates, losing hand editing.
+    """
+    return _run(auto.generate_terminal_strip_drawings,
+                component_ids=component_ids, book_id=book_id,
+                keep_existing=keep_existing)
+
+
+@mcp.tool
+def export_dwg(output_dir: str, pages: list | None = None,
+               file_ids: list[int] | None = None, all_pages: bool = False,
+               save_type: str = "dwg", dwg_version: str = "2018",
+               single_file: bool = False,
+               file_name_formula: str | None = None,
+               generate_automated_drawings: bool = False) -> dict:
+    """Export folios as DWG or DXF, which is how a project leaves here.
+
+    ``save_type`` is dwg, dxf or dxb; ``dwg_version`` one of 2000, 2004,
+    2007, 2010, 2013, 2018. ``single_file`` packs every folio into one
+    drawing instead of a file per page.
+
+    A file-per-page export will not run without a naming formula, and the
+    formula takes a bare variable name - ``FILE_TAG`` names each file after
+    its page mark - not the percent-delimited form used elsewhere, so one is
+    supplied by default. Files land in a subfolder tree under output_dir and
+    are reported relative to it.
+    """
+    return _run(auto.export_dwg, output_dir=output_dir, pages=pages,
+                file_ids=file_ids, all_pages=all_pages, save_type=save_type,
+                dwg_version=dwg_version, single_file=single_file,
+                file_name_formula=file_name_formula,
+                generate_automated_drawings=generate_automated_drawings)
+
+
+@mcp.tool
+def list_reports() -> dict:
+    """The report configurations attached to the project.
+
+    These are the saved queries - bill of materials, wire list, terminal
+    list, cable list - that ``export_reports`` and
+    ``generate_report_drawings`` run.
+    """
+    return _run(auto.list_reports)
+
+
+@mcp.tool
+def export_reports(output_dir: str, report_ids: list[int] | None = None,
+                   all_reports: bool = False, file_format: str = "xlsx",
+                   include_column_header: bool = True,
+                   one_sheet_per_break: bool = False,
+                   add_to_project: bool = False) -> dict:
+    """Export the project's reports to xlsx, xls, csv, txt or xml.
+
+    Known not to deliver on SOLIDWORKS Electrical 2025 SP5: every writer
+    returns success and produces no file, whatever the format and however
+    the target folder and report ids are set. The result is judged by what
+    lands on disk, so such a run reports ok=false with an explanation rather
+    than a success. Use ``generate_report_drawings`` to put a report into
+    the project as a folio instead.
+    """
+    return _run(auto.export_reports, output_dir=output_dir,
+                report_ids=report_ids, all_reports=all_reports,
+                file_format=file_format,
+                include_column_header=include_column_header,
+                one_sheet_per_break=one_sheet_per_break,
+                add_to_project=add_to_project)
+
+
+@mcp.tool
+def generate_report_drawings(report_ids: list[int] | None = None,
+                             all_reports: bool = False,
+                             book_or_folder_id: int | None = None) -> dict:
+    """Render reports as folios in the project rather than to a file.
+
+    This puts the bill of materials or the wire list into the document tree
+    as printable pages, so the drawing set carries its own tables.
+    """
+    return _run(auto.generate_report_drawings, report_ids=report_ids,
+                all_reports=all_reports, book_or_folder_id=book_or_folder_id)
+
+
+@mcp.tool
+def list_wires(mark_contains: str | None = None,
+               equipotential_contains: str | None = None,
+               component_id: int | None = None, limit: int = 500) -> dict:
+    """Every wire as a from-to row: both ends, component and terminal.
+
+    A wire here is the logical conductor, not a line on a page. Each row
+    carries mark, equipotential, signal, colour, section, length, cable, and
+    both ends, which makes this a wiring list somebody can build from.
+    ``component_id`` narrows it to what lands on one device.
+    """
+    return _run(auto.list_wires, mark_contains=mark_contains,
+                equipotential_contains=equipotential_contains,
+                component_id=component_id, limit=limit)
+
+
+@mcp.tool
+def find_wire(wire_id: int) -> dict:
+    """One wire in full, by id."""
+    return _run(auto.find_wire, wire_id=wire_id)
+
+
+@mcp.tool
+def update_wire(wire_id: int, mark: str | None = None,
+                signal: str | None = None, colour: str | None = None,
+                section_or_gauge: str | None = None,
+                diameter: float | None = None, length: float | None = None,
+                fixed_length: bool | None = None) -> dict:
+    """Change one wire's properties; anything left null is untouched.
+
+    Setting ``mark`` by hand makes it a manual number, which a later
+    ``number_wires`` pass leaves alone unless told otherwise.
+    """
+    return _run(auto.update_wire, wire_id=wire_id, mark=mark, signal=signal,
+                colour=colour, section_or_gauge=section_or_gauge,
+                diameter=diameter, length=length, fixed_length=fixed_length)
 
 
 # --------------------------------------------------------------------------
