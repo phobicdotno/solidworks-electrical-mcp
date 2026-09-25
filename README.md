@@ -19,9 +19,98 @@ locally.
 ## Task-level tools (start here)
 
 These do the things a user actually asks for, with no COM knowledge needed.
-Each one is a validated recipe over the generic bridge below, and each is
-covered by `tests/test_workflow_tools.py` against a live project. SOLIDWORKS
-Electrical must be running with a project open.
+Each one is a validated recipe over the generic bridge below. SOLIDWORKS
+Electrical must be running; `list_projects` and `open_project` work with
+nothing open, and everything else acts on whichever project is open.
+
+### Project lifecycle
+
+Start here: these pick which project the rest of the tools act on.
+
+| Tool | Purpose |
+|---|---|
+| `list_projects(name_contains?, project_type?)` | Every project in the environment, open or not, newest change first. Works with nothing open. |
+| `open_project(project_id? / name?)` | Open one and make it current. A name resolves exactly first, then by unique substring, so `"65021"` is enough. Refuses a project another user holds open. |
+| `close_project(project_id? / name?)` | Close it; with no argument, whichever is current. Closing is how SOLIDWORKS commits pending state. |
+| `create_project(name, template?, description?, customer?, contract_number?, open_after?)` | New project, optionally from a shipped template. |
+| `list_project_templates()` | The template names `create_project` accepts. |
+| `delete_project(project_id, confirm_name)` | Permanent. The name has to be typed back. |
+| `archive_project(output_path, ...)` / `unarchive_project(archive_path, ...)` | `.tewzip` in and out, with or without the library content it references. |
+| `project_properties(...)` | Read or set the title-block fields (customer, drawing office, contract number, addresses). |
+
+`IEwProjectX.update` commits nothing on a **closed** project: it returns
+`EW_PROJECT_NOTOPENED` and drops the edit without raising. `create_project`
+therefore writes the description and customer in a second pass with the new
+project open, and `project_properties` refuses a write to a project that is
+not open rather than reporting one that did not happen.
+
+### The environment library
+
+| Tool | Purpose |
+|---|---|
+| `search_manufacturer_parts(manufacturer?, reference?, description_contains?, library_code?, part_type?, limit?, refresh?)` | The part catalogue. Every filter a substring; `part_type` exact. |
+| `get_manufacturer_part(manufacturer, reference)` | One part in full, including its circuits and their terminals. |
+| `create_manufacturer_part(...)` / `update_manufacturer_part(...)` / `delete_manufacturer_part(manufacturer, reference, confirm_reference)` | Author a part with its circuits, edit its fields, retire it. |
+| `search_symbols(name?, symbol_type?, manufacturer?, reference?, library_code?, limit?, refresh?)` | The symbol library. |
+| `get_symbol(name)` / `import_symbol(name, drawing_path, symbol_type, ...)` / `delete_symbol(name, confirm_name)` | Read a symbol, create one from a DWG or DXF, remove one. |
+| `list_libraries()` | The library codes parts and symbols are filed under. |
+
+Both catalogues are swept and filtered in the server, because the API cannot
+do it: `IEwManufacturerPartFiltersX` has no setters at all, and
+`IEwSymbolFiltersX` has setters that do nothing - `setManufacturer("Wago")`
+then `getEwSymbolArray` returns `(0, ())` while a plain sweep finds four Wago
+symbols. A sweep costs about 28 seconds for 1721 symbols and 8 for 479 parts,
+so the index is cached per process, invalidated when the manager's count
+moves or a write goes through, and rebuildable with `refresh`.
+
+`import_symbol` takes DXF as happily as DWG. Attributes live in the drawing
+and cannot be added through the API afterwards, so a symbol that should print
+its component mark needs a `#TAG` ATTDEF in the file before import. `#TAG` is
+the attribute SOLIDWORKS resolves to the mark; `#MARK`, `#COMPONENT_TAG`,
+`#TAGREF` and the other obvious guesses render as their own literal text.
+
+### Project-wide operations
+
+Each of these rewrites a whole project at once and has no undo, so each takes
+an explicit action and an explicit selection (`all`, a book, a folder, or a
+list of folios). Take a snapshot first.
+
+| Tool | Purpose |
+|---|---|
+| `number_wires(action, selection, ...)` | `new` numbers only wires that have none; `new_and_recalculate`, `renumber` and `remove` do what they say. `renumber_manual` is off by default, because a mark somebody typed is a decision. |
+| `number_marks(action, object_types?, start_number?, step_increment?)` | Component-mark numbering: `update` or `renumber`, over components, cables, terminals, strips, locations, functions or harnesses. |
+| `generate_arrows(action, selection, ...)` | Origin/destination arrows: `auto_connect`, `reconnect`, `remove`. |
+| `optimize_wire_order(selection, ...)` | Recompute the connection order inside each equipotential. |
+| `generate_terminal_strip_drawings(component_ids?, book_id?, keep_existing?)` | Draw the terminal-strip sheets. |
+| `export_dwg(output_dir, pages? / all_pages?, save_type?, dwg_version?, single_file?)` | DWG/DXF out. |
+| `list_reports()` / `export_reports(...)` / `generate_report_drawings(...)` | The project's saved report queries, to a file or into the document tree. |
+| `list_wires(...)` / `find_wire(id)` / `update_wire(id, ...)` | The wiring list: both ends of every wire, component and terminal. |
+
+A file-per-page DWG export is rejected without a naming formula, and the
+formula takes a **bare** variable name: `FILE_TAG` works, `%FILE_TAG%` and no
+formula are both `EW_BAD_INPUTS`. One is supplied by default, and the files
+land in a subfolder tree under the export directory.
+
+The report file writers are known not to deliver on 2025 SP5: every format
+returns `EW_NO_ERROR` and writes nothing, with the target folder, report ids
+and extension all set and reading back correct. Both exporters are therefore
+judged by what landed on disk, so a run that wrote nothing says so instead of
+reporting success.
+
+### The project's own data
+
+| Tool | Purpose |
+|---|---|
+| `list_snapshots()` / `create_snapshot(name, ...)` / `restore_snapshot(id, confirm_name)` / `delete_snapshot(id, confirm_name)` | Project versions. Real restore points, and the only undo this server has. |
+| `list_io(...)` / `update_io(id, ...)` | The PLC I/O channels: mnemonic, key code, channel address, and the component circuit each sits on. |
+| `list_functions()` / `add_function(tag, description?)` / `delete_function(id, confirm_tag)` | Functional groups (the `=` part of a tag path). |
+| `update_cable(id, ...)` / `delete_cable(id, confirm_tag)` | The cable write side; `list_cables` is the read. |
+
+Snapshots are the mirror of the rule above: `create` and `restore` return
+`EW_PROJECT_OPENED` while the project is open, so those two close it, do the
+work through a manager fetched again from the environment, and reopen it.
+
+### Pages and devices
 
 | Tool | Purpose |
 |---|---|
@@ -53,6 +142,8 @@ Electrical must be running with a project open.
 | `move_symbol` / `move_symbols(moves)` | Move a symbol WITH the wire ends drawn to it. Prefer the batch: moving one at a time walks every line in the project per symbol. |
 | `add_text` / `list_texts` / `remove_text` | Free text on a page. Content is set before insert, unlike every other object. |
 | `check_drawing_rules(page, min_spacing?, box?)` | Crowded or coincident connection points, and anything outside the drawable box. |
+| `check_page_ink(page, ...)` | What a sheet actually DRAWS, measured off an export, which catches a footprint hanging outside the box that `check_drawing_rules` cannot see. |
+| `place_symbols` / `remove_symbols` / `add_texts` / `remove_texts` | Batch forms: one folio close for the whole page. Strongly preferred over the singular ones. |
 | `reconnect()` | Drop cached COM state and attach again (after SOLIDWORKS restarted). |
 
 Two failure modes are handled automatically: a COM factory dispatched while
@@ -166,17 +257,34 @@ at runtime when SOLIDWORKS Electrical is not attached, and they exit 0 when
 they do, so the exit code reports a pass for a test that checked nothing. The
 runner reads the SKIP marker out of the output and reports it as a skip.
 
-Eight tests genuinely run with no application: `test_renumber` (a bulk
-retag never letting two devices share a mark), `test_tool_surface` (every
-tool reaches its workflow and forwards what it declares),
-`test_batch_symbol_ops` (the
-folio close/open batching), `test_drawing_rules` (dot-to-dot spacing, the
-label-width rule and the drawable box), `test_page_ink` (measuring what a
-sheet really draws, against synthetic A3 sheets), `test_tag_marks` (tag root,
-number and the namespace prefix), `test_stale_factory_retry` (cached COM
-objects outliving the program) and `test_stdout_isolation`. Everything else
-needs the program running with a project open, which the two `--live` tests
-require outright.
+Most of the suite runs with no application at all. The interesting ones are
+the ones that check a rule a live test could not check without doing the
+damage it guards against:
+
+* `test_project_lifecycle` - a project open by another user is refused, an
+  ambiguous name is refused rather than guessed, `delete_project` needs its
+  name typed back, and the description is committed with the project open.
+* `test_library` - the catalogue cache is invalidated by a count change, a
+  write, or `refresh`; a part or symbol is never silently overwritten; a
+  failing terminal fails the part rather than shipping an unlabelled one.
+* `test_automation` - every action reaches `process` with its own enum.
+  `number_wires("new")` passes 0 and `renumber` passes 2, and the second
+  rewrites every wire label in the project; a selection that is incomplete
+  is refused rather than widened to everything; an exporter that reports
+  success and writes nothing is not a success.
+* `test_project_data` - `restore_snapshot` needs the snapshot's name back,
+  a snapshot is taken with the project closed and the project is open again
+  afterwards even when the attempt fails.
+* `test_tool_surface` - every tool reaches its workflow, in every workflow
+  module, and forwards every parameter it declares.
+* `test_renumber`, `test_batch_symbol_ops`, `test_drawing_rules`,
+  `test_page_ink`, `test_tag_marks`, `test_stale_factory_retry`,
+  `test_stdout_isolation` - bulk retag collisions, the folio close/open
+  batching, spacing and the drawable box, measuring what a sheet really
+  draws, tag roots and namespaces, cached COM objects outliving the program,
+  and keeping native logging off the JSON-RPC wire.
+
+Only the two `--live` tests need the program running with a project open.
 
 ## Editing a page: batch, do not loop
 

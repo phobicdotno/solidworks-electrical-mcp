@@ -58,6 +58,7 @@ from . import automation as auto
 from . import catalog as catalog_mod
 from . import com as com_mod
 from . import library as lib
+from . import projectdata as pd
 from . import projects as pj
 from . import workflows as wf
 
@@ -653,6 +654,156 @@ def reconnect() -> dict:
     """
     com_mod.app().disconnect()
     return connect()
+
+
+# --------------------------------------------------------------------------
+# The project's own data: snapshots, PLC I/O, functions, cables. Snapshots
+# come first because they are the only undo this server has: the project-wide
+# passes below rewrite a whole project at once and nothing else puts it back.
+
+
+@mcp.tool
+def list_snapshots() -> dict:
+    """The project's versions, newest first: id, name, created, size.
+
+    These are real restore points, not a log. Taking one before any
+    project-wide pass is the only undo available here.
+    """
+    return _run(pd.list_snapshots)
+
+
+@mcp.tool
+def create_snapshot(name: str, description: str | None = None,
+                    generate_automated_drawings: bool = False) -> dict:
+    """Take a restore point of the project as it stands.
+
+    Worth doing before number_wires, number_marks, generate_arrows or
+    renumber_components: those edit the whole project at once.
+    """
+    return _run(pd.create_snapshot, name=name, description=description,
+                generate_automated_drawings=generate_automated_drawings)
+
+
+@mcp.tool
+def restore_snapshot(snapshot_id: int, confirm_name: str) -> dict:
+    """Put the project back to a snapshot. ``confirm_name`` must match.
+
+    Everything done since is discarded - drawings, components, numbering.
+    Typing the name back is what stops a stale id rolling a project back by
+    weeks.
+    """
+    return _run(pd.restore_snapshot, snapshot_id=snapshot_id,
+                confirm_name=confirm_name)
+
+
+@mcp.tool
+def delete_snapshot(snapshot_id: int, confirm_name: str) -> dict:
+    """Remove a snapshot. ``confirm_name`` must match its name."""
+    return _run(pd.delete_snapshot, snapshot_id=snapshot_id,
+                confirm_name=confirm_name)
+
+
+@mcp.tool
+def list_io(mnemonic_contains: str | None = None,
+            description_contains: str | None = None,
+            limit: int = 500) -> dict:
+    """The project's PLC I/O channels.
+
+    Each row ties a mnemonic and a channel address to the component circuit
+    it sits on, which is the join between this drawing set and the PLC
+    program that drives it.
+    """
+    return _run(pd.list_io, mnemonic_contains=mnemonic_contains,
+                description_contains=description_contains, limit=limit)
+
+
+@mcp.tool
+def update_io(io_id: int, mnemonic: str | None = None,
+              description: str | None = None, key_code: str | None = None,
+              macro_name: str | None = None,
+              function_id: int | None = None) -> dict:
+    """Change one I/O channel; anything left null is untouched.
+
+    The channel address is computed from the component and its circuit, so it
+    is read-only: move a channel by changing what it is attached to.
+    """
+    return _run(pd.update_io, io_id=io_id, mnemonic=mnemonic,
+                description=description, key_code=key_code,
+                macro_name=macro_name, function_id=function_id)
+
+
+@mcp.tool
+def list_functions() -> dict:
+    """The project's functional groups (the ``=`` part of a tag path).
+
+    A location says where a device is; a function says what job it belongs
+    to. Both prefix a component's full mark.
+    """
+    return _run(pd.list_functions)
+
+
+@mcp.tool
+def add_function(tag: str, description: str | None = None) -> dict:
+    """Create a functional group."""
+    return _run(pd.add_function, tag=tag, description=description)
+
+
+@mcp.tool
+def delete_function(function_id: int, confirm_tag: str) -> dict:
+    """Remove a functional group. ``confirm_tag`` must match its tag.
+
+    Components filed under it lose that part of their mark, so this changes
+    how they are named.
+    """
+    return _run(pd.delete_function, function_id=function_id,
+                confirm_tag=confirm_tag)
+
+
+@mcp.tool
+def update_cable(cable_id: int, description: str | None = None,
+                 length: float | None = None,
+                 fixed_length: bool | None = None,
+                 diameter: float | None = None,
+                 bend_radius: float | None = None,
+                 colour: str | None = None, family: str | None = None,
+                 supplier: str | None = None,
+                 stock_number: str | None = None,
+                 article_number: str | None = None,
+                 linear_mass: str | None = None,
+                 standard: str | None = None,
+                 applied_voltage: float | None = None,
+                 full_load_current: float | None = None,
+                 voltage_drop: float | None = None,
+                 upstream_location_id: int | None = None,
+                 downstream_location_id: int | None = None,
+                 function_id: int | None = None) -> dict:
+    """Change one cable's properties; anything left null is untouched.
+
+    ``fixed_length`` decides whether the length survives a routing
+    recalculation: a cut length somebody measured on the boat is fixed, one
+    the software worked out is not.
+    """
+    return _run(pd.update_cable, cable_id=cable_id, description=description,
+                length=length, fixed_length=fixed_length, diameter=diameter,
+                bend_radius=bend_radius, colour=colour, family=family,
+                supplier=supplier, stock_number=stock_number,
+                article_number=article_number, linear_mass=linear_mass,
+                standard=standard, applied_voltage=applied_voltage,
+                full_load_current=full_load_current,
+                voltage_drop=voltage_drop,
+                upstream_location_id=upstream_location_id,
+                downstream_location_id=downstream_location_id,
+                function_id=function_id)
+
+
+@mcp.tool
+def delete_cable(cable_id: int, confirm_tag: str) -> dict:
+    """Remove a cable. ``confirm_tag`` must match its tag.
+
+    Its cores go with it, so anything drawn as one of those cores loses its
+    conductor.
+    """
+    return _run(pd.delete_cable, cable_id=cable_id, confirm_tag=confirm_tag)
 
 
 # --------------------------------------------------------------------------
