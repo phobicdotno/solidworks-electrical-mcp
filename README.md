@@ -1,7 +1,7 @@
 # solidworks-electrical-mcp
 
 MCP server for **SOLIDWORKS Electrical**, mastered against the
-SOLIDWORKS Electrical API help — **2025** and **2026** ship side-by-side and
+SOLIDWORKS Electrical API help: **2025** and **2026** ship side-by-side and
 the server picks the right one at runtime.
 
 The server attaches to a local SOLIDWORKS Electrical install via COM
@@ -204,16 +204,16 @@ interfaces, 29 new members, 2 removed members, 2 signature tweaks, plus a
 The Win32 COM ProgID is **`EwAPI.EwInteropFactoryX`** (interface
 `IEwInteropFactoryX`). The factory hands out:
 
-* `getEwApplication(licenseKey, errorCode)` → `IEwApplicationX` — gated behind
+* `getEwApplication(licenseKey, errorCode)` → `IEwApplicationX`, gated behind
   a licence *code* that is separate from the SOLIDWORKS program/seat licence.
   SOLIDWORKS ships a single shared key embedded identically in its own add-in
-  binaries (e.g. `ewexceladdin.dll`, `ewenvironmentarchiver.exe`) — it is the
-  same on every install, not a per-customer secret — so a known-good default
+  binaries (e.g. `ewexceladdin.dll`, `ewenvironmentarchiver.exe`), it is the
+  same on every install, not a per-customer secret, so a known-good default
   is **bundled** (`DEFAULT_LICENCE_KEY` in `com.py`) and the application root
   works out of the box. Override with `SWELE_LICENCE_KEY` in the env (read by
   `connect`) or `license_key=` on the `connect` tool if a future release
   rotates the key.
-* `getEwAPI(errorCode)` → `IEwAPIX` — no licence required, gives access to
+* `getEwAPI(errorCode)` → `IEwAPIX`, no licence required, gives access to
   application-discovery and version helpers.
 
 All three roots are reachable from the `call` tool via `root="application"`
@@ -249,7 +249,7 @@ its settings):
 }
 ```
 
-No `env` block is needed — the shared licence code is bundled, so
+No `env` block is needed: the shared licence code is bundled, so
 `call(..., root="application")` works once SOLIDWORKS Electrical is running.
 Set `SWELE_LICENCE_KEY` only to override the bundled key (e.g. if a future
 release rotates it).
@@ -312,11 +312,11 @@ Open and close the folio per TASK, not per unit.
 
 ## Why local stdio (not remote HTTP)
 
-SOLIDWORKS Electrical is a Windows desktop application accessed through COM —
+SOLIDWORKS Electrical is a Windows desktop application accessed through COM,
 the MCP server has to run on the same machine as the SW process. Local
 stdio is the right shape; an MCPB bundle is a future packaging option (see
 [ROADMAP.md](ROADMAP.md)).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
