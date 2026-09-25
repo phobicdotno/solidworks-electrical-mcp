@@ -56,6 +56,7 @@ from fastmcp import FastMCP
 
 from . import catalog as catalog_mod
 from . import com as com_mod
+from . import library as lib
 from . import projects as pj
 from . import workflows as wf
 
@@ -651,6 +652,211 @@ def reconnect() -> dict:
     """
     com_mod.app().disconnect()
     return connect()
+
+
+# --------------------------------------------------------------------------
+# The environment library: the catalogue of manufacturer parts and the symbol
+# set components are drawn from. A job that needs a device the library does
+# not carry stops dead until one is authored, so this is a write surface as
+# much as a read one.
+
+
+@mcp.tool
+def search_manufacturer_parts(manufacturer: str | None = None,
+                              reference: str | None = None,
+                              description_contains: str | None = None,
+                              library_code: str | None = None,
+                              part_type: str | None = None,
+                              limit: int = 50,
+                              refresh: bool = False) -> dict:
+    """Search the manufacturer-part catalogue; every filter is a substring.
+
+    ``part_type`` is exact: base, auxiliary, accessory, plc, plc_rack,
+    plc_module, plc_module_with_interface, plc_interface_point,
+    plc_interface_circuit, super_part, wire_accessory. The catalogue is
+    cached per process; ``refresh`` rebuilds it after an edit made elsewhere.
+    """
+    return _run(lib.search_manufacturer_parts, manufacturer=manufacturer,
+                reference=reference,
+                description_contains=description_contains,
+                library_code=library_code, part_type=part_type, limit=limit,
+                refresh=refresh)
+
+
+@mcp.tool
+def get_manufacturer_part(manufacturer: str, reference: str) -> dict:
+    """One part in full: dimensions, symbols, and its circuits/terminals.
+
+    The circuits are the electrical half - what a component made from this
+    part can be wired to. A part with no circuits places as a blank box.
+    """
+    return _run(lib.get_manufacturer_part, manufacturer=manufacturer,
+                reference=reference)
+
+
+@mcp.tool
+def create_manufacturer_part(manufacturer: str, reference: str,
+                             description: str | None = None,
+                             part_type: str | None = None,
+                             width_mm: float | None = None,
+                             height_mm: float | None = None,
+                             depth_mm: float | None = None,
+                             weight: float | None = None,
+                             library_code: str | None = None,
+                             supplier: str | None = None,
+                             article_number: str | None = None,
+                             stock_number: str | None = None,
+                             root_mark: str | None = None,
+                             series: str | None = None,
+                             scheme_symbol: str | None = None,
+                             line_diagram_symbol: str | None = None,
+                             footprint_symbol: str | None = None,
+                             datasheet: str | None = None,
+                             use_voltage: str | None = None,
+                             control_voltage: str | None = None,
+                             circuits: list[dict] | None = None,
+                             replace: bool = False) -> dict:
+    """Author a manufacturer part, with its circuits and terminals.
+
+    ``circuits`` is a list of ``{"code": "PID", "terminals": [{"text":
+    "X12:3", "mnemonic": "DI#1"}]}``. Codes are the environment's circuit
+    types: PID digital in, POD digital out, PIA analog in, POA analog out,
+    777/888 a plain terminal.
+
+    The width/height/depth are the real body dimensions, which is what a
+    cabinet layout reasons about - worth getting right even when a vendor
+    footprint drawing shows something larger.
+    """
+    return _run(lib.create_manufacturer_part, manufacturer=manufacturer,
+                reference=reference, description=description,
+                part_type=part_type, width_mm=width_mm, height_mm=height_mm,
+                depth_mm=depth_mm, weight=weight, library_code=library_code,
+                supplier=supplier, article_number=article_number,
+                stock_number=stock_number, root_mark=root_mark,
+                series=series, scheme_symbol=scheme_symbol,
+                line_diagram_symbol=line_diagram_symbol,
+                footprint_symbol=footprint_symbol, datasheet=datasheet,
+                use_voltage=use_voltage, control_voltage=control_voltage,
+                circuits=circuits, replace=replace)
+
+
+@mcp.tool
+def update_manufacturer_part(manufacturer: str, reference: str,
+                             description: str | None = None,
+                             part_type: str | None = None,
+                             width_mm: float | None = None,
+                             height_mm: float | None = None,
+                             depth_mm: float | None = None,
+                             weight: float | None = None,
+                             library_code: str | None = None,
+                             supplier: str | None = None,
+                             article_number: str | None = None,
+                             stock_number: str | None = None,
+                             root_mark: str | None = None,
+                             series: str | None = None,
+                             scheme_symbol: str | None = None,
+                             line_diagram_symbol: str | None = None,
+                             footprint_symbol: str | None = None,
+                             datasheet: str | None = None,
+                             use_voltage: str | None = None,
+                             control_voltage: str | None = None) -> dict:
+    """Change fields on an existing part; anything left null is untouched.
+
+    Circuits are not editable here: adding one to a part that components
+    already reference changes what those components offer, so rebuild with
+    ``create_manufacturer_part(replace=True)`` instead.
+    """
+    return _run(lib.update_manufacturer_part, manufacturer=manufacturer,
+                reference=reference, description=description,
+                part_type=part_type, width_mm=width_mm, height_mm=height_mm,
+                depth_mm=depth_mm, weight=weight, library_code=library_code,
+                supplier=supplier, article_number=article_number,
+                stock_number=stock_number, root_mark=root_mark,
+                series=series, scheme_symbol=scheme_symbol,
+                line_diagram_symbol=line_diagram_symbol,
+                footprint_symbol=footprint_symbol, datasheet=datasheet,
+                use_voltage=use_voltage, control_voltage=control_voltage)
+
+
+@mcp.tool
+def delete_manufacturer_part(manufacturer: str, reference: str,
+                             confirm_reference: str) -> dict:
+    """Remove a part from the catalogue. ``confirm_reference`` must match.
+
+    Components already carrying it keep the assignment as a dangling
+    reference, so check ``list_components(with_parts=True)`` first.
+    """
+    return _run(lib.delete_manufacturer_part, manufacturer=manufacturer,
+                reference=reference, confirm_reference=confirm_reference)
+
+
+@mcp.tool
+def search_symbols(name: str | None = None, symbol_type: str | None = None,
+                   manufacturer: str | None = None,
+                   reference: str | None = None,
+                   library_code: str | None = None,
+                   limit: int = 50, refresh: bool = False) -> dict:
+    """Search the symbol library; every filter is a substring except type.
+
+    ``symbol_type`` is exact: component, blackbox, 2d_footprint,
+    terminal_drawing, connection, xref, passive, pid, synoptic and so on.
+    The first call in a process sweeps the library (20 to 30 seconds for
+    1700 symbols) because the API's own symbol filter returns nothing; after
+    that it is cached.
+    """
+    return _run(lib.search_symbols, name=name, symbol_type=symbol_type,
+                manufacturer=manufacturer, reference=reference,
+                library_code=library_code, limit=limit, refresh=refresh)
+
+
+@mcp.tool
+def get_symbol(name: str) -> dict:
+    """One symbol in full, by its exact library name."""
+    return _run(lib.get_symbol, name=name)
+
+
+@mcp.tool
+def import_symbol(name: str, drawing_path: str,
+                  symbol_type: str = "2d_footprint",
+                  library_code: str | None = None,
+                  description: str | None = None,
+                  manufacturer: str | None = None,
+                  reference: str | None = None,
+                  root_mark: str | None = None,
+                  replace: bool = False) -> dict:
+    """Create a library symbol from a DWG or DXF file.
+
+    insertFromDwg takes DXF as happily as DWG, which makes a hand-written DXF
+    a practical way to author a footprint at the dimensions a part really has
+    rather than the ones a vendor drawing happens to show.
+
+    Attributes live in the drawing, not in the API - there is no way to add
+    one afterwards - so a symbol that should print its component mark needs a
+    ``#TAG`` ATTDEF in the file before import. ``#TAG`` is the one SOLIDWORKS
+    resolves to the mark; ``#MARK``, ``#COMPONENT_TAG`` and the other obvious
+    guesses render as their own literal text.
+    """
+    return _run(lib.import_symbol, name=name, drawing_path=drawing_path,
+                symbol_type=symbol_type, library_code=library_code,
+                description=description, manufacturer=manufacturer,
+                reference=reference, root_mark=root_mark, replace=replace)
+
+
+@mcp.tool
+def delete_symbol(name: str, confirm_name: str) -> dict:
+    """Remove a symbol from the library. ``confirm_name`` must match.
+
+    Parts pointing at it keep the name as a dangling reference and pages
+    already drawn keep their copy of the geometry, so this breaks future
+    placements rather than existing drawings.
+    """
+    return _run(lib.delete_symbol, name=name, confirm_name=confirm_name)
+
+
+@mcp.tool
+def list_libraries() -> dict:
+    """The library codes parts and symbols are filed under, with part counts."""
+    return _run(lib.list_libraries)
 
 
 # --------------------------------------------------------------------------
