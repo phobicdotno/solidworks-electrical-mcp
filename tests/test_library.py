@@ -26,6 +26,11 @@ Cases:
   K. import_symbol refuses a missing drawing file
   L. import_symbol refuses an existing name unless replace is asked for
   M. update writes only the fields it was given
+  N. the delete guard compares against the part that RESOLVED, not against
+     the caller's own other argument
+  O. a replace whose insert fails says the old one is gone, and stops
+     listing it
+  P. a NULL manager says which one and what to do, not 'NoneType'
 
 Run directly:
     .venv/Scripts/python.exe tests/test_library.py
@@ -217,11 +222,8 @@ class FakeSymbol:
 class FakePartManager:
     def __init__(self, parts, log):
         self.parts, self.calls, self.sweeps = parts, log, 0
-        self.count_override = None
 
     def getCount(self):
-        if self.count_override is not None:
-            return self.count_override
         return len([p for p in self.parts if not p.removed])
 
     def getEwManufacturerPartArray(self):
@@ -542,6 +544,122 @@ r = lib.update_manufacturer_part(app, CLIENT, manufacturer="Wago",
 check(r["ok"] and r["changed"] == [],
       f"M: a call with no fields should be a quiet no-op, got {r}")
 ok("M ok: update writes only what it was given", mark)
+
+mark = len(failures)
+# --- N: the guard must read the object, not the caller's other argument --
+# `confirm_reference == reference` compares two strings the caller supplied,
+# so it can only catch typing the same thing differently twice. It cannot
+# catch the failure it exists for: an identifier that resolves to something
+# other than what was meant. This models a catalogue whose lookup is looser
+# than exact, which is the case that separates the two implementations.
+class LooseManager(FakePartManager):
+    def findByManufacturerAndReference(self, man, ref):
+        for p in self.parts:
+            if p.removed:
+                continue
+            if (p.f["setManufacturer"].lower() == man.lower()
+                    and p.f["setReference"].lower() == ref.lower()):
+                return (p, 0)
+        return (None, 8)
+
+
+app = world()
+app.pm.__class__ = LooseManager
+app.env.pm = app.pm
+# A manufacturer typed in the wrong case still resolves the real part, and a
+# confirmation that matches what came back is accepted.
+r = lib.delete_manufacturer_part(app, CLIENT, manufacturer="WAGO",
+                                 reference="859-304",
+                                 confirm_reference="859-304")
+check(r["ok"], f"N: the honest case should still delete, got {r}")
+
+# A confirmation that matches nothing that resolved must be refused, and the
+# refusal has to name what DID resolve or it is not worth reading.
+app = world()
+app.pm.__class__ = LooseManager
+app.env.pm = app.pm
+r = lib.delete_manufacturer_part(app, CLIENT, manufacturer="wago",
+                                 reference="2002-1401",
+                                 confirm_reference="2002-1400")
+check(not r["ok"] and "2002-1401" in r["error"],
+      f"N: the refusal must name the part that RESOLVED, got {r}")
+check("Pass-through terminal" in r["error"],
+      f"N: and describe it, so the confirmation is worth reading, got {r}")
+check(not any(p.removed for p in app.pm.parts), "N: nothing may be removed")
+ok("N ok: the delete guard reads the resolved part, not the argument", mark)
+
+mark = len(failures)
+# --- O: a replace whose insert fails must not pretend ---------------------
+# replace=True is remove-then-create with no rollback. If the insert fails
+# the old part is already gone, and the cached index would keep listing it.
+app = world()
+lib.search_manufacturer_parts(app, CLIENT)     # prime the cache
+
+
+class FailingInsert(FakePart):
+    def insert(self):
+        self.calls.append(("insert", ()))
+        return 14                              # EW_INSERTION_FAILED
+
+
+app.pm.newEwManufacturerPart = lambda: (FailingInsert(log=app.calls), 0)
+r = lib.create_manufacturer_part(app, CLIENT, manufacturer="Wago",
+                                 reference="859-304", description="new",
+                                 replace=True)
+check(not r["ok"], f"O: a failed insert must not report success, got {r}")
+check("no longer has it" in r["error"],
+      f"O: it must say the old part is gone, got {r['error']}")
+check(lib.search_manufacturer_parts(
+          app, CLIENT, reference="859-304")["matched"] == 0,
+      "O: and the cache must stop listing the part that was removed")
+
+# A remove that fails must stop before creating anything.
+app = world()
+
+
+class StuckRemove(FakePart):
+    def remove(self):
+        self.calls.append(("remove", ()))
+        return 35                              # EW_CANNOT_REMOVE
+
+
+app.pm.parts[1].__class__ = StuckRemove
+before = len(app.pm.parts)
+r = lib.create_manufacturer_part(app, CLIENT, manufacturer="Wago",
+                                 reference="859-304", description="new",
+                                 replace=True)
+check(not r["ok"] and "left alone" in r["error"],
+      f"O: a failed remove must stop and say so, got {r}")
+check(len(app.pm.parts) == before,
+      "O: and nothing may have been created in its place")
+ok("O ok: a replace that fails half way says which half", mark)
+
+mark = len(failures)
+# --- P: a NULL manager explains itself ------------------------------------
+# Every manager reads NULL when its project is not open, and the bare
+# dereference gave the client "'NoneType' object has no attribute getCount",
+# which says nothing about what to do next.
+class NullEnv(FakeEnv):
+    def getEwManufacturerPartManager(self):
+        return (None, 0)
+
+    def getEwSymbolManager(self):
+        return (None, 0)
+
+
+app = world()
+app.env.__class__ = NullEnv
+for fn in (lib.search_manufacturer_parts, lib.search_symbols):
+    try:
+        fn(app, CLIENT)
+        check(False, f"P: {fn.__name__} should raise on a NULL manager")
+    except RuntimeError as e:
+        check("returned NULL" in str(e) and "open_project" in str(e),
+              f"P: the error should name the manager and the way out: {e}")
+    except AttributeError as e:
+        check(False, f"P: a bare AttributeError tells the caller nothing: "
+                     f"{e}")
+ok("P ok: a NULL manager names itself and the way out", mark)
 
 print()
 if failures:

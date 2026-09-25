@@ -106,9 +106,21 @@ reporting success.
 | `list_functions()` / `add_function(tag, description?)` / `delete_function(id, confirm_tag)` | Functional groups (the `=` part of a tag path). |
 | `update_cable(id, ...)` / `delete_cable(id, confirm_tag)` | The cable write side; `list_cables` is the read. |
 
-Snapshots are the mirror of the rule above: `create` and `restore` return
-`EW_PROJECT_OPENED` while the project is open, so those two close it, do the
-work through a manager fetched again from the environment, and reopen it.
+Snapshots are squeezed between two rules that contradict each other. `create`
+and `restore` return `EW_PROJECT_OPENED` while the project is open, but
+`getEwProjectSnapshotManager` returns NULL while it is closed - so the obvious
+reading, close it and then do the work, dies on a NULL manager. The one order
+that works is to take the manager and build the snapshot object while the
+project is open, close, `create`, and reopen; those pointers survive the
+close. The reopen lives in the context manager's exit so it runs even when
+the block raises, because every other tool acts on "the open project" and
+leaving it closed would strand the session rather than merely fail.
+
+Closing is cheap and reopening is not. `closeEwProjectID` on the 181-folio
+SeaLeopard project returns in 0.1 s; opening it again after that takes
+minutes, while a 4-folio template project reopens in 0.2 s. So a snapshot of
+a real project is a long operation, and a call that looks hung part way
+through is probably just reopening.
 
 ### Pages and devices
 

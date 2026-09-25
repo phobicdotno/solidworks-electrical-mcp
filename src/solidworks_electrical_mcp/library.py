@@ -28,8 +28,8 @@ import os
 import time
 from typing import Any
 
-from .workflows import (LANG, SYMBOL_TYPE_NAMES, _each, _rc, _rc_name, _text,
-                        _u)
+from .workflows import (LANG, SYMBOL_TYPE_NAMES, _each, _need, _rc,
+                        _rc_name, _text, _u)
 
 # EwManufacturerPartType (get_enum('EwManufacturerPartType')).
 PART_TYPE_NAMES = {
@@ -41,8 +41,10 @@ PART_TYPE_NAMES = {
 PART_TYPE_CODES = {v: k for k, v in PART_TYPE_NAMES.items()}
 SYMBOL_TYPE_CODES = {v: k for k, v in SYMBOL_TYPE_NAMES.items()}
 
-# name -> (rows, built_at, source_count). One entry per index kind. Keyed on
-# the manager's own count so a part added through the GUI invalidates it.
+# name -> (rows, build_seconds, source_count). One entry per index kind.
+# Keyed on the manager's own count, so a part added through the GUI
+# invalidates it; build_seconds is how long the sweep took, reported back so
+# the cost of a rebuild is visible rather than surprising.
 _INDEX: dict[str, tuple[list[dict], float, int]] = {}
 
 
@@ -54,11 +56,13 @@ def _env(app: Any) -> Any:
 
 
 def _part_manager(app: Any) -> Any:
-    return _u(_env(app).getEwManufacturerPartManager())
+    return _need(_u(_env(app).getEwManufacturerPartManager()),
+                 "getEwManufacturerPartManager")
 
 
 def _symbol_manager(app: Any) -> Any:
-    return _u(_env(app).getEwSymbolManager())
+    return _need(_u(_env(app).getEwSymbolManager()),
+                 "getEwSymbolManager")
 
 
 def _matches(row: dict, field: str, needle: str | None) -> bool:
@@ -279,6 +283,12 @@ def create_manufacturer_part(app: Any, client: Any, manufacturer: str,
         rc = _rc(existing.remove())
         steps.append({"step": "remove existing", "rc": rc,
                       "rc_name": _rc_name(rc)})
+        _INDEX.pop("parts", None)
+        if rc not in (0, None):
+            return {"ok": False, "steps": steps,
+                    "error": f"could not remove the existing "
+                             f"{manufacturer} {reference}: {_rc_name(rc)}; "
+                             f"it was left alone"}
 
     p = _u(mgr.newEwManufacturerPart())
     if p is None:
@@ -289,8 +299,10 @@ def create_manufacturer_part(app: Any, client: Any, manufacturer: str,
                       ("setReference", _rc(p.setReference(str(reference))))):
         steps.append({"step": label, "rc": rc, "rc_name": _rc_name(rc)})
 
-    # Read only the declared field names out of the frame, so a local that
-    # happens to share a name with a field cannot leak into the part.
+    # Pull the declared field names out of the frame. This keeps unrelated
+    # locals out of the part; it does NOT protect against a local that
+    # shares a field name, which would shadow the parameter. None currently
+    # does, and _PART_SETTERS is the list to check against if one is added.
     _here = locals()
     _apply_part_fields(p, {f: _here.get(f) for f, _, _ in _PART_SETTERS},
                        steps)
@@ -298,8 +310,14 @@ def create_manufacturer_part(app: Any, client: Any, manufacturer: str,
     rc = _rc(p.insert())
     steps.append({"step": "insert", "rc": rc, "rc_name": _rc_name(rc)})
     if rc not in (0, None):
+        # There is no rollback for a replace: the old part is already gone.
+        # Say so, and drop the cache, which otherwise keeps listing it.
+        _INDEX.pop("parts", None)
+        note = (" The existing part was removed first and the replacement "
+                "did not insert, so the catalogue no longer has it."
+                if existing is not None else "")
         return {"ok": False, "steps": steps,
-                "error": f"insert failed: {_rc_name(rc)}"}
+                "error": f"insert failed: {_rc_name(rc)}.{note}"}
 
     bad = _add_circuits(p, circuits or [], steps)
     rc = _rc(p.update())
@@ -404,11 +422,19 @@ def delete_manufacturer_part(app: Any, client: Any, manufacturer: str,
     if p is None:
         return {"ok": False,
                 "error": f"no part {manufacturer!r} / {reference!r}"}
-    if str(confirm_reference) != str(reference):
-        return {"ok": False, "part": _part_row(p),
-                "error": f"confirm_reference {confirm_reference!r} does not "
-                         f"match {reference!r}; nothing was deleted"}
     row = _part_row(p, detail=True)
+    # Compare against what the part itself reports, not against the caller's
+    # other argument. Checking `confirm_reference == reference` only catches
+    # typing the same string differently twice; it cannot catch the thing the
+    # guard exists for, which is an identifier that resolves to the wrong
+    # object. The description is echoed back for the same reason: a
+    # confirmation is only useful if it forces a look at what was resolved.
+    if str(confirm_reference) != str(row["reference"]):
+        return {"ok": False, "part": row,
+                "error": f"confirm_reference {confirm_reference!r} does not "
+                         f"match the part that resolved, "
+                         f"{row['reference']!r} ({row['description']!r}); "
+                         f"nothing was deleted"}
     rc = _rc(p.remove())
     _INDEX.pop("parts", None)
     gone = _u(mgr.findByManufacturerAndReference(str(manufacturer),
@@ -542,6 +568,11 @@ def import_symbol(app: Any, client: Any, name: str, drawing_path: str,
         rc = _rc(old.remove())
         steps.append({"step": "remove existing", "rc": rc,
                       "rc_name": _rc_name(rc)})
+        _INDEX.pop("symbols", None)
+        if rc not in (0, None):
+            return {"ok": False, "steps": steps,
+                    "error": f"could not remove the existing symbol "
+                             f"{name!r}: {_rc_name(rc)}; it was left alone"}
 
     s = _u(mgr.newEwSymbol())
     if s is None:
@@ -568,6 +599,11 @@ def import_symbol(app: Any, client: Any, name: str, drawing_path: str,
 
     _INDEX.pop("symbols", None)
     fresh = _u(mgr.findEwSymbolXByName(str(name)))
+    if fresh is None and old is not None:
+        steps.append({"step": "note", "rc": None, "rc_name":
+                      "the existing symbol was removed first and the "
+                      "replacement did not land, so the library no longer "
+                      "has it"})
     return {"ok": fresh is not None
             and all(st.get("rc") in (0, None) for st in steps),
             "symbol": None if fresh is None else _symbol_row(fresh,
@@ -587,11 +623,12 @@ def delete_symbol(app: Any, client: Any, name: str,
     s = _u(mgr.findEwSymbolXByName(str(name)))
     if s is None:
         return {"ok": False, "error": f"no symbol named {name!r}"}
-    if str(confirm_name) != str(name):
-        return {"ok": False, "symbol": _symbol_row(s),
-                "error": f"confirm_name {confirm_name!r} does not match "
-                         f"{name!r}; nothing was deleted"}
     row = _symbol_row(s, detail=True)
+    if str(confirm_name) != str(row["name"]):
+        return {"ok": False, "symbol": row,
+                "error": f"confirm_name {confirm_name!r} does not match the "
+                         f"symbol that resolved, {row['name']!r} "
+                         f"({row['description']!r}); nothing was deleted"}
     rc = _rc(s.remove())
     _INDEX.pop("symbols", None)
     gone = _u(mgr.findEwSymbolXByName(str(name))) is None
@@ -610,7 +647,8 @@ def list_libraries(app: Any, client: Any) -> dict:
     actually in use, because a code can be referenced without being
     registered.
     """
-    mgr = _u(_env(app).getEwLibraryManager())
+    mgr = _need(_u(_env(app).getEwLibraryManager()),
+                "getEwLibraryManager")
     rows = []
     for lib in _each(client, _u(mgr.getEwLibraryArray())):
         rows.append({"id": _text(lib, "getID"),

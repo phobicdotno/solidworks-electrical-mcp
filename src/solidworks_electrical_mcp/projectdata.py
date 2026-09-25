@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .workflows import (LANG, _each, _rc, _rc_name, _text, _u, _project,
-                        _set_mark)
+from .workflows import (LANG, _each, _need, _rc, _rc_name, _text, _u,
+                        _project, _set_mark)
 
 
 # EwErrorCode.EW_PROJECT_OPENED.
@@ -88,7 +88,8 @@ def list_snapshots(app: Any, client: Any) -> dict:
     undo this server has.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectSnapshotManager())
+    mgr = _need(_u(proj.getEwProjectSnapshotManager()),
+                "getEwProjectSnapshotManager")
     n = int(_u(mgr.getCount()) or 0)
     rows = []
     for i in range(n):
@@ -244,7 +245,8 @@ def list_io(app: Any, client: Any, mnemonic_contains: str | None = None,
     what identify an unassigned channel.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectInputOutputManager())
+    mgr = _need(_u(proj.getEwProjectInputOutputManager()),
+                "getEwProjectInputOutputManager")
     m_needle = (mnemonic_contains or "").lower()
     d_needle = (description_contains or "").lower()
     rows, scanned = [], 0
@@ -275,7 +277,8 @@ def update_io(app: Any, client: Any, io_id: int,
     not by typing a different address.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectInputOutputManager())
+    mgr = _need(_u(proj.getEwProjectInputOutputManager()),
+                "getEwProjectInputOutputManager")
     io = _u(mgr.findEwProjectInputOutputByID(int(io_id)))
     if io is None:
         return {"ok": False, "error": f"no I/O channel with id {io_id}"}
@@ -326,7 +329,8 @@ def list_functions(app: Any, client: Any) -> dict:
     and a tool that cannot see them disagree about what a device is called.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectFunctionManager())
+    mgr = _need(_u(proj.getEwProjectFunctionManager()),
+                "getEwProjectFunctionManager")
     rows = [_function_row(f)
             for f in _each(client, _u(mgr.getEwProjectFunctionArray()))]
     rows.sort(key=lambda r: str(r["tag_path"] or r["tag"] or ""))
@@ -337,7 +341,8 @@ def add_function(app: Any, client: Any, tag: str,
                  description: str | None = None) -> dict:
     """Create a functional group."""
     proj = _project(app)
-    mgr = _u(proj.getEwProjectFunctionManager())
+    mgr = _need(_u(proj.getEwProjectFunctionManager()),
+                "getEwProjectFunctionManager")
     for f in _each(client, _u(mgr.getEwProjectFunctionArray())):
         if str(_u(f.getTag()) or "") == str(tag):
             return {"ok": False, "function": _function_row(f),
@@ -369,7 +374,8 @@ def delete_function(app: Any, client: Any, function_id: int,
     how they are named.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectFunctionManager())
+    mgr = _need(_u(proj.getEwProjectFunctionManager()),
+                "getEwProjectFunctionManager")
     f = _u(mgr.findEwProjectFunctionByID(int(function_id)))
     if f is None:
         return {"ok": False, "error": f"no function with id {function_id}"}
@@ -379,8 +385,9 @@ def delete_function(app: Any, client: Any, function_id: int,
                 "error": f"confirm_tag {confirm_tag!r} does not match "
                          f"{row['tag']!r}; nothing was deleted"}
     rc = _rc(f.remove())
-    return {"ok": rc in (0, None), "deleted": row, "rc": rc,
-            "rc_name": _rc_name(rc)}
+    gone = _u(mgr.findEwProjectFunctionByID(int(function_id))) is None
+    return {"ok": rc in (0, None) and gone, "deleted": row, "rc": rc,
+            "rc_name": _rc_name(rc), "confirmed_gone": gone}
 
 
 # --------------------------------------------------------------------------
@@ -454,7 +461,8 @@ def update_cable(app: Any, client: Any, cable_id: int,
     length the software worked out is not.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectCableManager())
+    mgr = _need(_u(proj.getEwProjectCableManager()),
+                "getEwProjectCableManager")
     c = _u(mgr.findEwProjectCableByID(int(cable_id)))
     if c is None:
         return {"ok": False, "error": f"no cable with id {cable_id}"}
@@ -493,7 +501,8 @@ def delete_cable(app: Any, client: Any, cable_id: int,
     loses its conductor.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectCableManager())
+    mgr = _need(_u(proj.getEwProjectCableManager()),
+                "getEwProjectCableManager")
     c = _u(mgr.findEwProjectCableByID(int(cable_id)))
     if c is None:
         return {"ok": False, "error": f"no cable with id {cable_id}"}

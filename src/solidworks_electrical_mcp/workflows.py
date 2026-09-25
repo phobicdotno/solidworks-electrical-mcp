@@ -101,6 +101,22 @@ def _project(app: Any) -> Any:
     return proj
 
 
+def _need(obj: Any, what: str) -> Any:
+    """Return a manager, or say which one was NULL and why that happens.
+
+    A NULL manager is not a rare COM accident: getEwProjectSnapshotManager
+    returns NULL on a closed project, and every manager goes NULL if the
+    project is closed underneath a long operation. Dereferencing it gives
+    the caller ``'NoneType' object has no attribute 'getCount'``, which says
+    nothing about what to do next.
+    """
+    if obj is None:
+        raise RuntimeError(
+            f"{what} returned NULL. A manager reads NULL when the project it "
+            f"belongs to is not open; check project_info or open_project.")
+    return obj
+
+
 def _text(obj: Any, getter: str, *args: Any) -> Any:
     """Read a text getter; a failing getter yields None (never a dict that a
     substring filter could accidentally match)."""

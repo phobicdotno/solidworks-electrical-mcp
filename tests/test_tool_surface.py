@@ -50,7 +50,7 @@ def ok(msg: str, mark: int) -> None:
 # whole module of tools drift unchecked.
 MODULES = {"wf": "workflows.py", "pj": "projects.py",
            "lib": "library.py", "auto": "automation.py",
-           "pd": "projectdata.py"}
+           "pd": "projectdata.py", "st": "settings.py"}
 
 sv_src = (SRC / "server.py").read_text(encoding="utf-8")
 sv_tree = ast.parse(sv_src)
@@ -58,8 +58,14 @@ sv_tree = ast.parse(sv_src)
 trees = {alias: ast.parse((SRC / fn).read_text(encoding="utf-8"))
          for alias, fn in MODULES.items()}
 # alias -> {name: FunctionDef}, plus a flat view for the wrapper checks.
+# Only public functions are tool targets. Letting a private helper match is
+# how check C went quietly vacuous: the find_folio tool calls both
+# wf.find_folio and wf._folio_row, the walk stopped at whichever came first,
+# and _folio_row(f) takes one argument, so after skipping app and client
+# there was nothing left to compare and any drift on find_folio passed.
 mod_funcs = {alias: {n.name: n for n in tree.body
-                     if isinstance(n, ast.FunctionDef)}
+                     if isinstance(n, ast.FunctionDef)
+                     and not n.name.startswith("_")}
              for alias, tree in trees.items()}
 
 
@@ -95,19 +101,42 @@ mark = len(failures)
 EXEMPT = {"dry_run"}
 dropped_any, unreachable_any = [], []
 for tool in tools:
+    # A tool reaches its workflow in one of two shapes, and the audit has
+    # to read the arguments of the call that actually carries them:
+    #
+    #   _run(wf.thing, a=a, b=b)                    the common form
+    #   def _go(app, client): return wf.thing(app, client, a=a)   a nested
+    #                                                             helper
+    #
+    # Taking "any attribute anywhere in the body" resolved the wrong
+    # function for find_folio, whose body mentions wf.find_folio and
+    # wf._folio_row; and taking "every keyword anywhere in the body" counts
+    # a keyword meant for some other call as if the workflow had got it.
     target = target_alias = None
+    forwarded: set = set()
+
+    def _is_target(node):
+        return (isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in mod_funcs
+                and node.attr in mod_funcs[node.value.id])
+
     for sub in ast.walk(tool):
-        if (isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
-                and sub.value.id in mod_funcs
-                and sub.attr in mod_funcs[sub.value.id]):
-            target_alias, target = sub.value.id, sub.attr
+        if not isinstance(sub, ast.Call):
+            continue
+        # wf.thing(...) called directly
+        if _is_target(sub.func):
+            target_alias, target = sub.func.value.id, sub.func.attr
+            forwarded = {kw.arg for kw in sub.keywords if kw.arg}
+            break
+        # _run(wf.thing, ...) passing it along
+        if sub.args and _is_target(sub.args[0]):
+            target_alias, target = sub.args[0].value.id, sub.args[0].attr
+            forwarded = {kw.arg for kw in sub.keywords if kw.arg}
             break
     if target is None:
         continue                      # not a workflow wrapper
     declared = set(arg_names(tool))
-    forwarded = {kw.arg for sub in ast.walk(tool)
-                 if isinstance(sub, ast.Call)
-                 for kw in sub.keywords if kw.arg}
     # skip app and client, which the COM layer supplies
     accepted = set(arg_names(mod_funcs[target_alias][target], skip=2))
 

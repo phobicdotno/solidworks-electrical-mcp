@@ -21,8 +21,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .workflows import (_each, _rc, _rc_name, _text, _u, find_folio,
-                        _folio_row, _project)
+from .workflows import (_each, _need, _rc, _rc_name, _text, _u,
+                        find_folio, _folio_row, _project)
 
 # EwNumberWireAction.
 WIRE_ACTIONS = {"new": 0, "new_and_recalculate": 1, "renumber": 2,
@@ -65,18 +65,64 @@ def _steps() -> tuple[list, Any]:
     return steps, step
 
 
-def _tree(folder: str) -> list[str]:
-    """Every file under a folder, relative, sorted.
+def _tree(folder: str) -> dict:
+    r"""Every file under a folder: relative path -> (size, mtime).
 
-    Both exporters write into subfolders of the directory they are given -
-    a DWG export lands in ``<project>\\<book>\\<page>.dwg`` - so a flat
+    Both exporters write into subfolders of the directory they are given - a
+    DWG export lands in ``<project>\<book>\<page>.dwg`` - so a flat
     listdir sees an empty folder and reports a failure that did not happen.
+
+    The size and mtime are here because the name alone is not enough either.
+    A project is normally exported to the same folder every time, and on the
+    second run the files are overwritten rather than added, so comparing
+    names finds nothing new and calls a successful export a silent failure.
     """
-    out = []
+    out: dict = {}
     for base, _, files in os.walk(folder):
         for f in files:
-            out.append(os.path.relpath(os.path.join(base, f), folder))
-    return sorted(out)
+            full = os.path.join(base, f)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out[os.path.relpath(full, folder)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def _written(before: dict, after: dict) -> list[str]:
+    """The files that appeared or changed, which is what "it wrote" means."""
+    return sorted(k for k, v in after.items() if before.get(k) != v)
+
+
+def _export_outcome(rc: int | None, before: dict, after: dict,
+                    what: str, output_dir: str) -> dict:
+    """Judge an export by the folder, and tell the three cases apart.
+
+    Measured: SOLIDWORKS does not rewrite a DWG that is already there. A
+    second export to the same folder leaves the file untouched, mtime and
+    all, so "nothing changed" means one of two quite different things and
+    reporting either as a plain failure is wrong.
+
+    * files appeared or changed  -> it worked;
+    * nothing changed but the folder already holds files -> they were
+      already there and were left alone, which is not a failure;
+    * nothing changed and the folder is empty -> it really did nothing,
+      whatever the return code said.
+    """
+    written = _written(before, after)
+    out = {"ok": rc in (0, None) and bool(written or after),
+           "files_written": written,
+           "files_present": sorted(after),
+           "output_dir": output_dir}
+    if rc in (0, None) and not written and after:
+        out["note"] = (f"{what} rewrote nothing: the files were already in "
+                       f"{output_dir} and SOLIDWORKS leaves an existing "
+                       f"export in place. Delete them first to force a "
+                       f"fresh one.")
+    elif rc in (0, None) and not after:
+        out["error"] = (f"{what} reported success and wrote nothing under "
+                        f"{output_dir}")
+    return out
 
 
 def _id_array(ids: list[int]) -> Any:
@@ -99,6 +145,46 @@ def _resolve_folios(app: Any, client: Any, pages: list | None,
         ids.append(_u(f.getID()))
         rows.append(_folio_row(f))
     return ids, rows
+
+
+def _resolve_selection(selection: str | None, book_id: int | None,
+                       folder_id: int | None, folio_ids: list[int]) -> str:
+    """Work out the scope from what the caller actually asked for.
+
+    Passing ``pages=["102"]`` without also passing ``selection="folios"``
+    used to leave the scope at "all": the operation ran over the whole
+    project, and the result still listed page 102 under "folios", so a
+    renumber of 181 folios came back reading like a renumber of one page.
+
+    So the scope is derived, not defaulted. Naming folios, a book or a
+    folder means that. Naming nothing means the whole project, which stays
+    possible but has to be the only thing asked for.
+    """
+    if selection is None:
+        if folio_ids:
+            return "folios"
+        if book_id is not None:
+            return "book"
+        if folder_id is not None:
+            return "folder"
+        return "all"
+    if selection not in SELECTION_TYPES:
+        raise ValueError(f"unknown selection {selection!r}; "
+                         f"have {sorted(SELECTION_TYPES)}")
+    # An explicit scope that contradicts the scope arguments is a mistake
+    # worth refusing: one of the two readings runs over the whole project.
+    if selection != "folios" and folio_ids:
+        raise ValueError(
+            f"selection={selection!r} with pages/file_ids given is "
+            f"ambiguous; pass selection='folios' to act on those pages, or "
+            f"drop them to act on the {selection}")
+    if selection != "book" and book_id is not None:
+        raise ValueError(f"selection={selection!r} with book_id given is "
+                         f"ambiguous")
+    if selection != "folder" and folder_id is not None:
+        raise ValueError(f"selection={selection!r} with folder_id given is "
+                         f"ambiguous")
+    return selection
 
 
 def _apply_selection(obj: Any, step: Any, selection: str,
@@ -130,7 +216,8 @@ def _apply_selection(obj: Any, step: Any, selection: str,
 
 
 def number_wires(app: Any, client: Any, action: str = "new",
-                 selection: str = "all", book_id: int | None = None,
+                 selection: str | None = None,
+                 book_id: int | None = None,
                  folder_id: int | None = None,
                  pages: list | None = None,
                  file_ids: list[int] | None = None,
@@ -155,6 +242,7 @@ def number_wires(app: Any, client: Any, action: str = "new",
                          f"have {sorted(WIRE_ACTIONS)}")
     proj = _project(app)
     ids, rows = _resolve_folios(app, client, pages, file_ids)
+    selection = _resolve_selection(selection, book_id, folder_id, ids)
     op = _u(proj.newEwProjectNumberWires())
     if op is None:
         return {"ok": False, "error": "newEwProjectNumberWires returned NULL"}
@@ -212,7 +300,8 @@ def number_marks(app: Any, client: Any, action: str = "update",
 
 
 def generate_arrows(app: Any, client: Any, action: str = "auto_connect",
-                    selection: str = "all", book_id: int | None = None,
+                    selection: str | None = None,
+                    book_id: int | None = None,
                     folder_id: int | None = None, pages: list | None = None,
                     file_ids: list[int] | None = None,
                     origin_symbol: str | None = None,
@@ -229,6 +318,7 @@ def generate_arrows(app: Any, client: Any, action: str = "auto_connect",
                          f"have {sorted(ARROW_ACTIONS)}")
     proj = _project(app)
     ids, rows = _resolve_folios(app, client, pages, file_ids)
+    selection = _resolve_selection(selection, book_id, folder_id, ids)
     op = _u(proj.newEwProjectAutomaticArrows())
     if op is None:
         return {"ok": False,
@@ -246,7 +336,7 @@ def generate_arrows(app: Any, client: Any, action: str = "auto_connect",
             "folios": rows, "steps": steps}
 
 
-def optimize_wire_order(app: Any, client: Any, selection: str = "all",
+def optimize_wire_order(app: Any, client: Any, selection: str | None = None,
                         book_id: int | None = None,
                         folder_id: int | None = None,
                         pages: list | None = None,
@@ -262,6 +352,7 @@ def optimize_wire_order(app: Any, client: Any, selection: str = "all",
     """
     proj = _project(app)
     ids, rows = _resolve_folios(app, client, pages, file_ids)
+    selection = _resolve_selection(selection, book_id, folder_id, ids)
     op = _u(proj.newEwProjectOptimizeWireOrder())
     if op is None:
         return {"ok": False,
@@ -369,18 +460,14 @@ def export_dwg(app: Any, client: Any, output_dir: str,
     if not all_pages:
         step("setExportDwgSelectionFiles",
              op.setExportDwgSelectionFiles(_id_array(ids)))
-    before = set(_tree(output_dir))
+    before = _tree(output_dir)
     rc = step("exportDwg", op.exportDwg(
         DWG_EXPORT_SINGLE if single_file else DWG_EXPORT_MULTIPLE))
-    written = sorted(set(_tree(output_dir)) - before)
-    out = {"ok": rc in (0, None) and bool(written),
-           "output_dir": output_dir, "save_type": save_type,
-           "dwg_version": str(dwg_version),
-           "file_name_formula": formula, "folios": rows,
-           "files_written": written, "steps": steps}
-    if rc in (0, None) and not written:
-        out["error"] = ("exportDwg reported success but wrote nothing under "
-                        f"{output_dir}")
+    out = _export_outcome(rc, before, _tree(output_dir), "exportDwg",
+                          output_dir)
+    out.update({"save_type": save_type, "dwg_version": str(dwg_version),
+                "file_name_formula": formula, "folios": rows,
+                "steps": steps})
     return out
 
 
@@ -392,7 +479,8 @@ def list_reports(app: Any, client: Any) -> dict:
     own set, which is why this is a project read and not a library one.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectReportManager())
+    mgr = _need(_u(proj.getEwProjectReportManager()),
+                "getEwProjectReportManager")
     n = int(_u(mgr.getCount()) or 0)
     rows = []
     for i in range(n):
@@ -457,24 +545,22 @@ def export_reports(app: Any, client: Any, output_dir: str,
         step("setEwProjectReportIDArray",
              op.setEwProjectReportIDArray(_id_array(report_ids or [])))
 
-    before = set(_tree(output_dir))
+    before = _tree(output_dir)
     if file_format in ("xlsx", "xls"):
         rc = step("doExcelExport", op.doExcelExport())
     elif file_format == "xml":
         rc = step("doXMLExport", op.doXMLExport())
     else:
         rc = step("doTxtExport", op.doTxtExport())
-    written = sorted(set(_tree(output_dir)) - before)
-    out = {"ok": rc in (0, None) and bool(written),
-           "output_dir": output_dir, "file_format": file_format,
-           "files_written": written, "steps": steps}
-    if rc in (0, None) and not written:
-        out["error"] = (
-            "the report writer reported success and wrote nothing under "
-            f"{output_dir}. This is what SOLIDWORKS Electrical 2025 SP5 does "
-            "for every format from COM; use generate_report_drawings to put "
-            "the report into the project as a folio, or run the export from "
-            "the GUI.")
+    out = _export_outcome(rc, before, _tree(output_dir),
+                          "the report writer", output_dir)
+    out.update({"file_format": file_format, "steps": steps})
+    if "error" in out:
+        out["error"] += (". This is what SOLIDWORKS Electrical 2025 SP5 does "
+                         "for every format from COM; use "
+                         "generate_report_drawings to put the report into "
+                         "the project as a folio, or run the export from the "
+                         "GUI.")
     return out
 
 
@@ -549,7 +635,8 @@ def list_wires(app: Any, client: Any, mark_contains: str | None = None,
     the usual question: what is connected to this thing.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectWireManager())
+    mgr = _need(_u(proj.getEwProjectWireManager()),
+                "getEwProjectWireManager")
     needle = (mark_contains or "").lower()
     eq_needle = (equipotential_contains or "").lower()
     rows, scanned = [], 0
@@ -574,7 +661,8 @@ def list_wires(app: Any, client: Any, mark_contains: str | None = None,
 def find_wire(app: Any, client: Any, wire_id: int) -> dict:
     """One wire in full, by id."""
     proj = _project(app)
-    mgr = _u(proj.getEwProjectWireManager())
+    mgr = _need(_u(proj.getEwProjectWireManager()),
+                "getEwProjectWireManager")
     w = _u(mgr.findEwProjectWireByID(int(wire_id)))
     if w is None:
         return {"ok": False, "error": f"no wire with id {wire_id}"}
@@ -606,7 +694,8 @@ def update_wire(app: Any, client: Any, wire_id: int,
     the point of typing one.
     """
     proj = _project(app)
-    mgr = _u(proj.getEwProjectWireManager())
+    mgr = _need(_u(proj.getEwProjectWireManager()),
+                "getEwProjectWireManager")
     w = _u(mgr.findEwProjectWireByID(int(wire_id)))
     if w is None:
         return {"ok": False, "error": f"no wire with id {wire_id}"}

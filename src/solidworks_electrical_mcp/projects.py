@@ -205,6 +205,12 @@ def create_project(app: Any, client: Any, name: str,
             return {"ok": False,
                     "error": f"unknown template {template!r}; have {avail}"}
 
+    # Note which project to put back BEFORE creating anything. Reading it
+    # after the insert would assume the insert leaves the current project
+    # alone, and if a release ever changes that, the project the caller was
+    # working in is the thing that gets lost.
+    restore = _current_id(app)
+
     p = _u(mgr.newEwProject())
     if p is None:
         return {"ok": False, "error": "newEwProject returned NULL"}
@@ -230,7 +236,6 @@ def create_project(app: Any, client: Any, name: str,
               "contract_number": contract_number}
     wants_fields = any(v is not None for v in fields.values())
 
-    restore = _current_id(app)
     if wants_fields or open_after:
         step("openEwProjectID", app.openEwProjectID(int(pid)))
     if wants_fields:

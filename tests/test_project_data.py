@@ -22,6 +22,8 @@ Cases:
   L. delete_cable needs the tag back, and confirms the cable is gone
   M. a failure inside the closed block still leaves the project open
   N. the snapshot manager is taken while the project is still open
+  O. delete_snapshot retries with the project closed when told to, and does
+     not pay for a close when it is not
 
 Run directly:
     .venv/Scripts/python.exe tests/test_project_data.py
@@ -302,14 +304,72 @@ class FakeApp:
     def __init__(self, proj, project_id=9):
         self.proj, self.project_id = proj, project_id
         self.current_id = project_id
-        self.env = FakeEnv(self)
 
     def getEwProjectCurrent(self):
         return ((self.proj, 0) if self.current_id is not None
                 else (None, 19))
 
-    def getEwEnvironment(self):
-        return (self.env, 0)
+    def closeEwProjectID(self, pid):
+        self.proj.log.append(("closeEwProjectID", (pid,)))
+        if pid == self.project_id:
+            self.current_id = None
+        return 0
+
+    def openEwProjectID(self, pid):
+        self.proj.log.append(("openEwProjectID", (pid,)))
+        if pid == self.project_id:
+            self.current_id = pid
+        return 0
+
+
+class FakeProject:
+    def __init__(self, log, snaps, ios, funcs, cables):
+        self.log = log
+        self.snaps = SnapshotManager(log, snaps)
+        self.app = None
+        self.ios = ArrayManager(log, ios)
+        self.funcs = ArrayManager(log, funcs,
+                                  lambda: FakeFunction(log, 50, ""))
+        self.cables = ArrayManager(log, cables)
+
+    def getID(self):
+        return 9
+
+    def getEwProjectSnapshotManager(self):
+        # The other half of the rule the live run found: this returns NULL
+        # while the project is closed, so the manager cannot be fetched
+        # after the close. Together with create() refusing on an open
+        # project, that leaves exactly one workable order.
+        if self.app is not None and self.app.current_id is None:
+            return (None, 0)
+        return (self.snaps, 0)
+
+    def getEwProjectInputOutputManager(self):
+        return (self.ios, 0)
+
+    def getEwProjectFunctionManager(self):
+        return (self.funcs, 0)
+
+    def getEwProjectCableManager(self):
+        return (self.cables, 0)
+
+
+class FakeApp:
+    """The application, which knows whether the project is open.
+
+    Closing one has to really close it here, or the rule the snapshot
+    operations exist to work around cannot be tested: a fake that always
+    says "open" would fail them, and one that always says "closed" would
+    pass them whether or not they close anything.
+    """
+
+    def __init__(self, proj, project_id=9):
+        self.proj, self.project_id = proj, project_id
+        self.current_id = project_id
+
+    def getEwProjectCurrent(self):
+        return ((self.proj, 0) if self.current_id is not None
+                else (None, 19))
 
     def closeEwProjectID(self, pid):
         self.proj.log.append(("closeEwProjectID", (pid,)))
@@ -608,6 +668,46 @@ check(order.index("setName") < order.index("closeEwProjectID")
       < order.index("create") < order.index("openEwProjectID"),
       f"N: build while open, create while closed, order={order}")
 ok("N ok: the manager is taken while the project is still open", mark)
+
+mark = len(failures)
+# --- O: the EW_PROJECT_OPENED retry in delete_snapshot -------------------
+# Removing a restore point does not touch the project, so the normal path
+# must not pay for a close and reopen of a project that takes minutes to
+# open. But if this build does refuse, the retry has to work rather than
+# hand back the refusal.
+app, log = world()
+r = pd.delete_snapshot(app, CLIENT, snapshot_id=1,
+                       confirm_name="before renumber")
+check(r["ok"], f"O: the plain delete should succeed, got {r}")
+check("closeEwProjectID" not in [c[0] for c in log],
+      f"O: and must not close the project to do it, "
+      f"log={[c[0] for c in log]}")
+
+app, log = world()
+snap = app.proj.snaps.snaps[0]
+attempts = {"n": 0}
+
+
+def refuse_then_go():
+    attempts["n"] += 1
+    log.append(("remove", ()))
+    if app.current_id is not None:
+        return 45                      # EW_PROJECT_OPENED
+    snap.removed = True
+    return 0
+
+
+snap.remove = refuse_then_go
+r = pd.delete_snapshot(app, CLIENT, snapshot_id=1,
+                       confirm_name="before renumber")
+order = [c[0] for c in log]
+check(r["ok"], f"O: the retry should get there, got {r}")
+check(attempts["n"] == 2, f"O: it should try twice, not {attempts['n']}")
+check(order.index("closeEwProjectID") < order.index("openEwProjectID"),
+      f"O: with a close and a reopen around the second try, order={order}")
+check(app.current_id == 9,
+      f"O: and the project open again, got {app.current_id}")
+ok("O ok: the delete retries closed only when SOLIDWORKS asks", mark)
 
 print()
 if failures:

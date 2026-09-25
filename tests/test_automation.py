@@ -28,6 +28,11 @@ Cases:
   M. update_wire writes only the fields it was given
   N. a file-per-page DWG export always carries a naming formula
   O. an exporter that reports success and writes nothing is not a success
+  P. naming pages scopes the run to those pages without being told twice
+  Q. a scope that contradicts the pages given is refused
+  R. a repeat export to the same folder is not mistaken for a failure, and
+     an export left in place is told apart from one that did nothing
+  S. a pass whose process() refuses is reported as a failure, with the code
 
 Run directly:
     .venv/Scripts/python.exe tests/test_automation.py
@@ -61,15 +66,21 @@ def ok(msg: str, mark: int) -> None:
 
 
 class Recorder:
-    """A generic operation object: every call lands in the shared log."""
+    """A generic operation object: every call lands in the shared log.
 
-    def __init__(self, log, name):
+    ``fail`` makes one named member return a non-zero EwErrorCode, because
+    every member returning 0 means no test ever sees what happens when
+    SOLIDWORKS refuses.
+    """
+
+    def __init__(self, log, name, fail=None):
         self.log, self.name = log, name
+        self.fail = fail or {}
 
     def __getattr__(self, member):
         def _call(*args):
             self.log.append((member, args))
-            return 0
+            return self.fail.get(member, 0)
         return _call
 
 
@@ -187,10 +198,12 @@ class FakeReport:
 
 
 class FakeProject:
-    def __init__(self, log, folios, wires, reports, writes_files=None):
+    def __init__(self, log, folios, wires, reports, writes_files=None,
+                 fail=None):
         self.log, self.folios, self.wires = log, folios, wires
         self.reports = reports
         self.writes_files = writes_files or []
+        self.fail = fail or {}
 
     # Each factory hands back a recorder tagged with which operation it is,
     # so one log tells the whole story in order.
@@ -198,7 +211,7 @@ class FakeProject:
         self.log.append((f"new {name}", ()))
         if name in ("ExportDWGFiles", "ExportReport"):
             return (ExportRecorder(self.log, name, self.writes_files), 0)
-        return (Recorder(self.log, name), 0)
+        return (Recorder(self.log, name, self.fail), 0)
 
     def newEwProjectNumberWires(self):
         return self._new("NumberWires")
@@ -270,7 +283,7 @@ class FakeClient:
 CLIENT = FakeClient()
 
 
-def world(writes_files=None):
+def world(writes_files=None, fail=None):
     log: list = []
     folios = [FakeFolio(101, "101"), FakeFolio(102, "102"),
               FakeFolio(107, "07")]
@@ -281,7 +294,8 @@ def world(writes_files=None):
     ]
     reports = [FakeReport(11, "Bill of materials", "cmp", 2),
                FakeReport(12, "Wire list", "wire", 1)]
-    app = FakeApp(FakeProject(log, folios, wires, reports, writes_files))
+    app = FakeApp(FakeProject(log, folios, wires, reports, writes_files,
+                              fail))
     return app, log
 
 
@@ -558,6 +572,125 @@ r = auto.export_dwg(app, CLIENT, output_dir=d, pages=["101"])
 check(not r["ok"] and "wrote nothing" in r["error"],
       f"O: the same goes for the DWG export, got {r}")
 ok("O ok: an empty export is a failure however clean the return code", mark)
+
+mark = len(failures)
+# --- P: naming pages is enough to scope the run --------------------------
+# The defect this guards: number_wires(pages=["102"], action="renumber") set
+# selection type 0 (the whole project), never called setSelection, renumbered
+# all 181 folios, and returned {"selection": "all", "folios": [page 102]} -
+# a project-wide rewrite that read back as one page.
+for fn, kw in ((auto.number_wires, {"action": "renumber"}),
+               (auto.generate_arrows, {"action": "remove"}),
+               (auto.optimize_wire_order, {})):
+    app, log = world()
+    r = fn(app, CLIENT, pages=["102"], **kw)
+    check(find(log, "setSelectionType") == [(3,)],
+          f"P: {fn.__name__} with pages must scope to folios (3), "
+          f"got {find(log, 'setSelectionType')}")
+    check(find(log, "setSelection") == [(("IDS", (102,)),)],
+          f"P: {fn.__name__} must select exactly that folio, "
+          f"got {find(log, 'setSelection')}")
+    check(r["selection"] == "folios",
+          f"P: {fn.__name__} must report the scope it used, got {r}")
+
+# A book id alone scopes to the book, and nothing at all still means all.
+app, log = world()
+auto.number_wires(app, CLIENT, book_id=7)
+check(find(log, "setSelectionType") == [(1,)]
+      and find(log, "setSelection") == [(("IDS", (7,)),)],
+      f"P: a book id alone should scope to that book, "
+      f"got {find(log, 'setSelectionType')} {find(log, 'setSelection')}")
+app, log = world()
+r = auto.number_wires(app, CLIENT)
+check(find(log, "setSelectionType") == [(0,)] and r["selection"] == "all",
+      f"P: nothing asked for still means the whole project, got {r}")
+ok("P ok: naming pages scopes the run, and is reported as such", mark)
+
+mark = len(failures)
+# --- Q: a contradictory scope is refused ---------------------------------
+# Either reading might be what was meant, and one of them runs over the
+# whole project, so guessing is not acceptable here.
+app, log = world()
+try:
+    auto.number_wires(app, CLIENT, selection="all", pages=["102"])
+    check(False, "Q: selection='all' with pages must raise")
+except ValueError as e:
+    check("ambiguous" in str(e), f"Q: unhelpful error: {e}")
+check(not find(log, "process"), "Q: nothing may run")
+try:
+    auto.number_wires(app, CLIENT, selection="folios", book_id=7)
+    check(False, "Q: selection='folios' with book_id must raise")
+except ValueError as e:
+    check("ambiguous" in str(e), f"Q: unhelpful error: {e}")
+# The explicit form still works when it agrees with the arguments.
+app, log = world()
+r = auto.number_wires(app, CLIENT, selection="folios", pages=["101", "07"])
+check(r["ok"] and find(log, "setSelection") == [(("IDS", (101, 107)),)],
+      f"Q: an explicit scope that agrees must still work, got {r}")
+ok("Q ok: a scope that contradicts the pages given is refused", mark)
+
+mark = len(failures)
+# --- R: the three export outcomes are told apart -------------------------
+# Measured live: SOLIDWORKS does not rewrite a DWG that is already there, so
+# a second export to the same folder leaves the file untouched. "Nothing
+# changed" therefore means two quite different things, and calling both a
+# failure is wrong - a fixed per-project export folder is normal usage.
+import os
+
+# 1. files appear -> it worked.
+d = tempfile.mkdtemp()
+app, log = world(writes_files=["101.dwg"])
+r1 = auto.export_dwg(app, CLIENT, output_dir=d, pages=["101"])
+check(r1["ok"] and r1["files_written"] == ["101.dwg"],
+      f"R: the first export should report the file, got {r1}")
+check("note" not in r1 and "error" not in r1,
+      f"R: and needs no explanation, got {r1}")
+
+# 2. nothing changes but the folder holds the export -> left in place.
+app, log = world(writes_files=[])        # the exporter writes nothing new
+r2 = auto.export_dwg(app, CLIENT, output_dir=d, pages=["101"])
+check(r2["ok"], f"R: an export already in place is not a failure, got {r2}")
+check("already in" in r2.get("note", ""),
+      f"R: and it should say why nothing changed, got {r2}")
+check(r2["files_present"] == ["101.dwg"],
+      f"R: reporting what is there, got {r2}")
+
+# 3. nothing changes and the folder is empty -> it really did nothing.
+d = tempfile.mkdtemp()
+app, log = world(writes_files=[])
+r3 = auto.export_dwg(app, CLIENT, output_dir=d, pages=["101"])
+check(not r3["ok"] and "wrote nothing" in r3["error"],
+      f"R: a genuinely empty export is still a failure, got {r3}")
+
+# The report writer takes the same three readings.
+d = tempfile.mkdtemp()
+app, log = world(writes_files=[])
+r4 = auto.export_reports(app, CLIENT, output_dir=d, all_reports=True)
+check(not r4["ok"] and "generate_report_drawings" in r4["error"],
+      f"R: and points at the route that does work, got {r4}")
+ok("R ok: written, left in place and did nothing are three answers", mark)
+
+mark = len(failures)
+# --- S: a refusal from SOLIDWORKS is a failure, and says which code ------
+# Every member of the fake returned 0, so no test had ever seen a pass that
+# SOLIDWORKS declined. A numbering run that quietly reports ok on a refusal
+# is worse than one that fails: the caller believes the project was changed.
+for fn, kw in ((auto.number_wires, {"action": "new"}),
+               (auto.number_marks, {"action": "update"}),
+               (auto.generate_arrows, {"action": "auto_connect"}),
+               (auto.optimize_wire_order, {}),
+               (auto.generate_terminal_strip_drawings, {})):
+    member = "generate" if fn is auto.generate_terminal_strip_drawings         else "process"
+    app, log = world(fail={member: 45})
+    r = fn(app, CLIENT, **kw)
+    check(not r["ok"],
+          f"S: {fn.__name__} must not report ok when {member} refuses, "
+          f"got {r}")
+    named = [st for st in r["steps"]
+             if st["step"] == member and st["rc_name"] == "EW_PROJECT_OPENED"]
+    check(named,
+          f"S: and the steps must carry the named code, got {r['steps']}")
+ok("S ok: a refused pass is reported as one, with the error code", mark)
 
 print()
 if failures:

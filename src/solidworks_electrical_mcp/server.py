@@ -60,6 +60,7 @@ from . import com as com_mod
 from . import library as lib
 from . import projectdata as pd
 from . import projects as pj
+from . import settings as st
 from . import workflows as wf
 
 mcp = FastMCP(
@@ -654,6 +655,98 @@ def reconnect() -> dict:
     """
     com_mod.app().disconnect()
     return connect()
+
+
+# --------------------------------------------------------------------------
+# Settings: the values that decide how a project behaves rather than what it
+# contains - mark formulas, wire styles, title blocks, the cable types that
+# may be specified.
+
+
+@mcp.tool
+def project_config(setting: str | None = None, value: Any = None) -> dict:
+    """Read the project's configuration, or set one value.
+
+    With no arguments, reports every setting the installed version defines
+    (read from the live type library, so it is that version's own list) with
+    what the project holds for it. With ``setting``, reports one; an unknown
+    name comes back with near matches rather than an error alone. With
+    ``setting`` and ``value``, writes it and reads it back so the result
+    shows what actually took.
+
+    These drive mark formulas, cross-reference format, wire numbering rules
+    and page format, so a change here changes how the project behaves.
+    """
+    return _run(st.project_config, setting=setting, value=value)
+
+
+@mcp.tool
+def list_wire_styles(name_contains: str | None = None) -> dict:
+    """The wire styles the project draws with.
+
+    A style is electrical and graphical at once: section, colour, tension and
+    frequency, plus the formula its label is built from. A project that draws
+    every wire in one style has no wiring list worth printing, so this is
+    where to look when the reports come out wrong.
+    """
+    return _run(st.list_wire_styles, name_contains=name_contains)
+
+
+@mcp.tool
+def update_wire_style(wire_style_id: int, description: str | None = None,
+                      section_or_gauge: str | None = None,
+                      colour: str | None = None, tension: str | None = None,
+                      frequency: str | None = None,
+                      linear_mass: str | None = None,
+                      bend_radius: float | None = None,
+                      wire_mark_formula: str | None = None,
+                      equipotential_formula: str | None = None) -> dict:
+    """Change one wire style; anything left null is untouched.
+
+    Every wire already drawn in this style takes the change, so editing the
+    section or the mark formula of a style in use is a project-wide edit.
+    """
+    return _run(st.update_wire_style, wire_style_id=wire_style_id,
+                description=description, section_or_gauge=section_or_gauge,
+                colour=colour, tension=tension, frequency=frequency,
+                linear_mass=linear_mass, bend_radius=bend_radius,
+                wire_mark_formula=wire_mark_formula,
+                equipotential_formula=equipotential_formula)
+
+
+@mcp.tool
+def list_title_blocks(name_contains: str | None = None,
+                      limit: int = 100) -> dict:
+    """The title blocks available to draw pages with.
+
+    ``regenerate_title_blocks`` refreshes what a page prints; this says what
+    it could print with.
+    """
+    return _run(st.list_title_blocks, name_contains=name_contains,
+                limit=limit)
+
+
+@mcp.tool
+def search_cable_references(manufacturer: str | None = None,
+                            reference: str | None = None,
+                            description_contains: str | None = None,
+                            limit: int = 50) -> dict:
+    """The cable types in the library, which is what a cable is made from.
+
+    ``list_cables`` reports the cables a project has; this reports what could
+    be specified. Each row carries the core count, because a reference with
+    the wrong number of cores is the usual reason a drawn cable will not take
+    the conductors asked of it.
+    """
+    return _run(st.search_cable_references, manufacturer=manufacturer,
+                reference=reference,
+                description_contains=description_contains, limit=limit)
+
+
+@mcp.tool
+def list_harnesses() -> dict:
+    """The project's harnesses: conductors that are physically bundled."""
+    return _run(st.list_harnesses)
 
 
 # --------------------------------------------------------------------------

@@ -11,10 +11,13 @@ passed; pass --live to include them.
 Several of the others also skip at runtime when the application is not
 attached, and they exit 0 when they do - so exit code alone reports green for
 a test that checked nothing. Their SKIP marker is read out of the output and
-reported as a skip. Eight tests genuinely run with no application:
-test_batch_symbol_ops, test_drawing_rules, test_page_ink, test_renumber,
-test_tag_marks, test_tool_surface, test_stale_factory_retry and
-test_stdout_isolation.
+reported as a skip.
+
+Most of the suite genuinely runs with no application, including everything
+that checks a guard: test_project_lifecycle, test_library, test_automation
+and test_project_data drive fakes precisely because a live test cannot
+exercise "delete_project refuses the wrong name" or "renumber uses the right
+enum" without doing the damage. Only the two LIVE tests need the program.
 
     .venv/Scripts/python.exe tests/run_all.py
     .venv/Scripts/python.exe tests/run_all.py --live

@@ -23,8 +23,13 @@ Cases:
   J. create_project re-applies the name AFTER the template insert
   K. delete_project refuses a mismatched confirm_name and removes nothing
   L. delete_project closes the project first when it is the current one
+  J2. the project that was open before a create is current again after it
+  J3. open_after leaves the new project open instead
+  K. delete_project refuses a mismatched confirm_name and removes nothing
+  L. delete_project closes the project first when it is the current one
   M. project_properties writes only what it was given, then updates once
   N. project_properties reads the addresses back for the caller
+  O. a write to a project that is not open is refused, a read is not
 
 Run directly:
     .venv/Scripts/python.exe tests/test_project_lifecycle.py
@@ -286,7 +291,7 @@ ok("C ok: a unique substring resolves", mark)
 
 mark = len(failures)
 # --- D: an ambiguous substring is refused, not guessed --------------------
-# "Project" appears in two names. Opening the wrong project is silent and
+# "a" appears in several names. Opening the wrong project is silent and
 # expensive, so this must raise rather than pick one.
 app = world()
 try:
