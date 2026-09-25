@@ -117,10 +117,14 @@ the block raises, because every other tool acts on "the open project" and
 leaving it closed would strand the session rather than merely fail.
 
 Closing is cheap and reopening is not. `closeEwProjectID` on the 181-folio
-SeaLeopard project returns in 0.1 s; opening it again after that takes
-minutes, while a 4-folio template project reopens in 0.2 s. So a snapshot of
-a real project is a long operation, and a call that looks hung part way
-through is probably just reopening.
+SeaLeopard project returns in 0.1 s. Opening it again after that is the
+expensive half: `create_snapshot` on that project produced its 12 KB
+snapshot about 12 minutes in and the reopen had still not returned an hour
+later, while the whole cycle on a 4-folio template project takes 1.6 s. So a
+snapshot is usable on a small project and a background job on a large one,
+and a call that looks hung is sitting in the reopen with the snapshot
+already taken - `list_snapshots` will show it. `delete_snapshot` needs no
+close and is instant either way.
 
 ### Pages and devices
 

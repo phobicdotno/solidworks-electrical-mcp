@@ -113,9 +113,16 @@ def create_snapshot(app: Any, client: Any, name: str,
     project and the manager is unreachable on a closed one. The project is
     open again when this returns.
 
-    On a project of any size this is slow. Reopening the 181-folio
-    SeaLeopard project after a close took minutes on the machine this was
-    written on, and that cost is paid on every snapshot.
+    On a large project this does not finish in any useful time, and the
+    snapshot is not what costs. Measured on the 181-folio SeaLeopard
+    project: ``create`` produced its 12 KB snapshot about 12 minutes in, and
+    the reopen that follows had still not returned an hour later. A 4-folio
+    template project goes through the whole cycle in 1.6 seconds.
+
+    So treat this as usable on small projects and as a background job on
+    large ones, and expect a call that looks hung to be sitting in the
+    reopen with the snapshot already taken. ``list_snapshots`` will show it.
+    ``delete_snapshot`` needs no close at all and is instant either way.
     """
     steps: list[dict] = []
 
