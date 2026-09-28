@@ -6,8 +6,13 @@ the server picks the right one at runtime.
 
 The server attaches to a local SOLIDWORKS Electrical install via COM
 (`EwAPI.EwInteropFactoryX`, late-bound through `pywin32`) and exposes the
-full API surface (141 interfaces in 2025, 146 in 2026) to an MCP
-client through a small set of discovery, comparison, and execution tools.
+full API surface (141 interfaces in 2025, 146 in 2026) through **101
+task-level tools** plus a generic bridge for anything they do not cover.
+
+A session can pick its own project, author the parts and symbols a job needs,
+draw and annotate pages, run the project-wide numbering and export passes,
+and take a restore point before doing so. None of that needed a human in the
+GUI first.
 
 ## Status
 
@@ -15,6 +20,13 @@ Alpha. Tested on Windows 11 against SOLIDWORKS Electrical 2025 SP5; the
 catalogue ships for both 2025 and 2026 and is selected automatically based
 on the installed factory. Requires SOLIDWORKS Electrical to be installed
 locally.
+
+Every documented API behaviour here was measured against the running
+application rather than read out of the published help, which is wrong often
+enough that the distinction matters: two getters it lists do not exist, two
+filter objects it documents do not filter, and one exporter reports success
+while writing nothing. [CHANGELOG.md](CHANGELOG.md) records each of those
+with what was seen.
 
 ## Task-level tools (start here)
 
