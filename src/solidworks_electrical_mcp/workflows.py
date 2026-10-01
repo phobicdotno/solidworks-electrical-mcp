@@ -2158,6 +2158,11 @@ def _symbol_points(s: Any) -> list:
     return out
 
 
+# Smallest displacement SOLIDWORKS will actually store for a placed symbol.
+# Anything under this is accepted and discarded; see move_symbols.
+_MIN_MOVE_MM = 0.25
+
+
 def _folio_lines(app: Any, client: Any, file_id: int) -> list:
     """The lines drawn on one folio.
 
@@ -2394,22 +2399,73 @@ def move_symbols(app: Any, client: Any, moves: list,
         if steps["folio.close"] not in (0, None):
             return {"ok": False, "dry_run": False, "plan": plan,
                     "steps": steps, "error": "could not close the folio"}
+    # Every COM handle above was fetched while the folio was still OPEN, and
+    # closing it invalidates them: writes through the stale handles land
+    # unpredictably. A batch of fourteen wrote twelve one run and one the
+    # next, reporting ok both times because the return codes were discarded.
+    # So re-fetch by id now that the folio is closed, keep each rc, and read
+    # the position back - a move that did not take must not report success.
+    fresh_lines = {ln["id"]: ln for ln in _folio_lines(app, client, fid)}
+    results = []
     for j in jobs:
-        _rc(j["sym"].setXPosition(j["ox"] + j["dx"]))
-        _rc(j["sym"].setYPosition(j["oy"] + j["dy"]))
-        _rc(j["sym"].update())
+        want_x, want_y = j["ox"] + j["dx"], j["oy"] + j["dy"]
+        row = {"symbol_id": j["id"], "to": [want_x, want_y]}
+        sym = _u(smgr.getProjectSymbolByID(int(j["id"])))
+        if sym is None:
+            row.update(ok=False, error="symbol vanished after the folio closed")
+            results.append(row)
+            continue
+        # A displacement below about 0.2 mm is silently DISCARDED: the
+        # setters and update all return EW_NO_ERROR and the position reads
+        # back unchanged. Measured on a 2D layout footprint by bisection -
+        # 0.10, 0.15 and 0.20 were all dropped, 0.24 and 0.25 applied, in
+        # both directions and with nothing adjacent, so it is a minimum-delta
+        # filter rather than a collision or snap rule. Closing a 0.085 mm gap
+        # between rail modules falls straight into it.
+        #
+        # Two hops each comfortably over the threshold net the small delta,
+        # so park the symbol a millimetre away and come back to the target.
+        dist = max(abs(want_x - j["ox"]), abs(want_y - j["oy"]))
+        if 0.0 < dist < _MIN_MOVE_MM:
+            _rc(sym.setXPosition(want_x + 1.0))
+            _rc(sym.setYPosition(want_y + 1.0))
+            _rc(sym.update())
+            row["two_step"] = True
+        row["setX"] = _rc_name(_rc(sym.setXPosition(want_x)))
+        row["setY"] = _rc_name(_rc(sym.setYPosition(want_y)))
+        row["update"] = _rc_name(_rc(sym.update()))
+        sym = _u(smgr.getProjectSymbolByID(int(j["id"])))
+        got_x, got_y = float(_u(sym.getXPosition())), float(_u(sym.getYPosition()))
+        row["landed"] = [got_x, got_y]
+        row["ok"] = abs(got_x - want_x) < 1e-3 and abs(got_y - want_y) < 1e-3
+
         for lm in j["line_moves"]:
             ln, ends = lm["line"], lm["ends"]
+            obj = (fresh_lines.get(ln["id"]) or {}).get("obj")
+            if obj is None:
+                row.setdefault("line_errors", []).append(
+                    {"line_id": ln["id"], "error": "line not found after close"})
+                row["ok"] = False
+                continue
             if "start" in ends:
-                _rc(ln["obj"].setStartPointXPosition(ln["x1"] + j["dx"]))
-                _rc(ln["obj"].setStartPointYPosition(ln["y1"] + j["dy"]))
+                _rc(obj.setStartPointXPosition(ln["x1"] + j["dx"]))
+                _rc(obj.setStartPointYPosition(ln["y1"] + j["dy"]))
             if "end" in ends:
-                _rc(ln["obj"].setEndPointXPosition(ln["x2"] + j["dx"]))
-                _rc(ln["obj"].setEndPointYPosition(ln["y2"] + j["dy"]))
-            _rc(ln["obj"].update())
+                _rc(obj.setEndPointXPosition(ln["x2"] + j["dx"]))
+                _rc(obj.setEndPointYPosition(ln["y2"] + j["dy"]))
+            rcn = _rc_name(_rc(obj.update()))
+            if rcn != "EW_NO_ERROR":
+                row.setdefault("line_errors", []).append(
+                    {"line_id": ln["id"], "update": rcn})
+                row["ok"] = False
+        results.append(row)
+
     if was_open:
         steps["folio.open"] = _rc(f.open())
-    return {"ok": True, "dry_run": False, "plan": plan, "steps": steps}
+    failed = [r for r in results if not r.get("ok")]
+    return {"ok": not failed, "dry_run": False, "plan": plan, "steps": steps,
+            "moved": len(results) - len(failed), "failed": len(failed),
+            "results": results}
 
 
 def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
