@@ -714,7 +714,7 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         raise ValueError(
             f"tag root must stay {src_root!r} when cloning "
             f"{_u(src.getTagPath())!r} (got {new_bare!r}, root {new_root!r}). "
-            "MR rule: a clone keeps its device class; relays are always "
+            "House rule: a clone keeps its device class; relays are always "
             "rooted K.")
     if new_root != src_root:
         # Same class, different casing ("k33"): write the project's casing so
@@ -1191,7 +1191,7 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
         raise ValueError(
             f"tag root must be {part_root!r} for {manufacturer} {reference}: "
             f"the components already using this part are {examples}. "
-            f"Got {new_bare!r} (root {new_root!r}). MR rule: a device keeps "
+            f"Got {new_bare!r} (root {new_root!r}). House rule: a device keeps "
             "its class; relays are always rooted K.")
     if part_root and new_root != part_root:
         new_bare = part_root + new_bare[len(new_root):]
@@ -1560,7 +1560,7 @@ def rename_component(app: Any, client: Any, tag: str, new_tag: str,
     if new_root.casefold() != src_root.casefold():
         raise ValueError(
             f"tag root must stay {src_root!r} when renaming {old_bare!r} "
-            f"(got {new_bare!r}, root {new_root!r}). MR rule: a device keeps "
+            f"(got {new_bare!r}, root {new_root!r}). House rule: a device keeps "
             "its class; relays are always rooted K.")
     if new_root != src_root:
         new_bare = src_root + new_bare[len(new_root):]
@@ -1662,7 +1662,7 @@ def renumber_components(app: Any, client: Any, renames: list,
         if new_root.casefold() != root.casefold():
             raise ValueError(
                 f"tag root must stay {root!r} when renaming {old!r} (got "
-                f"{new!r}, root {new_root!r}). MR rule: a device keeps its "
+                f"{new!r}, root {new_root!r}). House rule: a device keeps its "
                 "class; relays are always rooted K.")
         if new_root != root:
             new = root + new[len(new_root):]
@@ -2116,11 +2116,11 @@ def delete_folio(app: Any, client: Any, file_id: int) -> dict:
 # --------------------------------------------------------------------------
 # Drawing rules: spacing, the drawable box, and moving without breaking wires
 
-# MR design rule: every drawn coordinate and every line end stays inside this
+# Design rule: every drawn coordinate and every line end stays inside this
 # box on a schematic sheet. Override per call where a sheet differs.
 GO_BOX = {"x_min": 50.0, "x_max": 370.0, "y_min": 80.0, "y_max": 240.0}
 
-# MR design rule: leave at least ONE grid dot between connections. The sheet
+# Design rule: leave at least ONE grid dot between connections. The sheet
 # grid is 10 mm, so two connection points must be at least 20 mm apart, which
 # puts a dot between them. Corroborated twice on this project: 20 mm is by far
 # the most common gap between points of different symbols (156 occurrences),

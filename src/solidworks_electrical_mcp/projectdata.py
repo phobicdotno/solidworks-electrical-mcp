@@ -8,7 +8,7 @@ project and has no undo; a snapshot taken beforehand does. They are the same
 project versions the GUI's version manager shows.
 
 The I/O manager is the PLC side: one row per channel, tying a mnemonic and a
-channel address to the component circuit it lives on. On a Maritime Robotics
+channel address to the component circuit it lives on. On a typical PLC-controlled
 vessel that is the join between the SOLIDWORKS drawing and the CODESYS
 program, so it is worth being able to read and write from here.
 """
@@ -114,7 +114,7 @@ def create_snapshot(app: Any, client: Any, name: str,
     open again when this returns.
 
     On a large project this does not finish in any useful time, and the
-    snapshot is not what costs. Measured on the 181-folio SeaLeopard
+    snapshot is not what costs. Measured on the 181-folio production
     project: ``create`` produced its 12 KB snapshot about 12 minutes in, and
     the reopen that follows had still not returned an hour later. A 4-folio
     template project goes through the whole cycle in 1.6 seconds.
@@ -247,7 +247,7 @@ def list_io(app: Any, client: Any, mnemonic_contains: str | None = None,
     program that drives it.
 
     Both come back empty on a channel nobody has assigned yet - 98 of them
-    on the SeaLeopard project, every one carrying a key code (POD, PID, PIA,
+    on a real project, every one carrying a key code (POD, PID, PIA,
     POA) and a description but no mnemonic - so key_code and description are
     what identify an unassigned channel.
     """

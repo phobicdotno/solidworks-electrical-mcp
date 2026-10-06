@@ -42,7 +42,7 @@ Start here: these pick which project the rest of the tools act on.
 | Tool | Purpose |
 |---|---|
 | `list_projects(name_contains?, project_type?)` | Every project in the environment, open or not, newest change first. Works with nothing open. |
-| `open_project(project_id? / name?)` | Open one and make it current. A name resolves exactly first, then by unique substring, so `"65021"` is enough. Refuses a project another user holds open. |
+| `open_project(project_id? / name?)` | Open one and make it current. A name resolves exactly first, then by unique substring, so `"12345"` is enough. Refuses a project another user holds open. |
 | `close_project(project_id? / name?)` | Close it; with no argument, whichever is current. Closing is how SOLIDWORKS commits pending state. |
 | `create_project(name, template?, description?, customer?, contract_number?, open_after?)` | New project, optionally from a shipped template. |
 | `list_project_templates()` | The template names `create_project` accepts. |
@@ -129,7 +129,7 @@ the block raises, because every other tool acts on "the open project" and
 leaving it closed would strand the session rather than merely fail.
 
 Closing is cheap and reopening is not. `closeEwProjectID` on the 181-folio
-SeaLeopard project returns in 0.1 s. Opening it again after that is the
+production project returns in 0.1 s. Opening it again after that is the
 expensive half: `create_snapshot` on that project produced its 12 KB
 snapshot about 12 minutes in and the reopen had still not returned an hour
 later, while the whole cycle on a 4-folio template project takes 1.6 s. So a

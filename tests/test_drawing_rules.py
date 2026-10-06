@@ -1,6 +1,6 @@
 """Regression test: the drawing rules Karstein set, checked without the app.
 
-Three rules, all from the SeaLeopard project (2026-09-22):
+Three rules, all from a real project (2026-09-22):
 
   "dot to dot is minimum distance" - the sheet grid is 10 mm, so two
   connection points of different symbols may sit on adjacent grid dots but no

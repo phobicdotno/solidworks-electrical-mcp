@@ -1348,7 +1348,7 @@ def open_project(project_id: int | None = None,
     """Open a project and make it the one every other tool acts on.
 
     Give an id from ``list_projects``, or a name - exact first, then a unique
-    substring, so "65021" resolves without the full mark. Refuses a project
+    substring, so "12345" resolves without the full mark. Refuses a project
     another user holds open.
     """
     return _run(pj.open_project, project_id=project_id, name=name)
@@ -1585,7 +1585,7 @@ def clone_component(source_tag: str, new_tag: str,
     page is given, every symbol of the source on that page is copied for the
     new component, shifted by ``offset_x``/``offset_y`` (default: the next
     free slot at the pitch of the neighbouring symbols). The new tag must
-    keep the source's tag root (MR rule: relays are always K). ``dry_run``
+    keep the source's tag root (House rule: relays are always K). ``dry_run``
     (default True) returns the plan only; call again with ``dry_run=False``
     to write. The result carries an ``undo`` hint.
     """

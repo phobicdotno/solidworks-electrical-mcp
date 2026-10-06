@@ -13,7 +13,7 @@ fake project manager that records what was called on it.
 Cases:
   A. list_projects works with nothing open, filters, and flags the current one
   B. open_project resolves an exact name
-  C. open_project resolves a unique substring ("65021")
+  C. open_project resolves a unique substring ("12345")
   D. an ambiguous substring is refused rather than guessed
   E. a project another user holds open is refused, and never opened
   F. close_project with no argument closes the current project
@@ -241,7 +241,7 @@ def world(current_index=None, template_folder=""):
     projects = [
         FakeProject(1, "Unarchive Project Information", "ANSI Template",
                     log=log),
-        FakeProject(9, "MR3ELE.D001.65021 USV", "BZM - SeaLeopard", log=log),
+        FakeProject(9, "PRJ.D001.12345 Demo", "Demo project", log=log),
         FakeProject(4, "Main Control Panel - 2026", "Standard Industrial",
                     log=log),
         FakeProject(11, "Held Elsewhere", "locked", by_another=True, log=log),
@@ -264,7 +264,7 @@ check("Some Macro" not in names,
 check(len(names) == 4, f"A: expected the four projects, got {names}")
 
 app = world(current_index=1)
-r = pj.list_projects(app, CLIENT, name_contains="65021")
+r = pj.list_projects(app, CLIENT, name_contains="12345")
 check(r["count"] == 1 and r["projects"][0]["id"] == 9,
       f"A: name_contains should find the one project, got {r}")
 check(r["projects"][0]["is_current"],
@@ -275,7 +275,7 @@ ok("A ok: listing works unopened, filters, and flags the current project",
 mark = len(failures)
 # --- B: open by exact name ------------------------------------------------
 app = world()
-r = pj.open_project(app, CLIENT, name="MR3ELE.D001.65021 USV")
+r = pj.open_project(app, CLIENT, name="PRJ.D001.12345 Demo")
 check(r["ok"] and r["current_project_id"] == 9, f"B: expected to open 9, {r}")
 check(("openEwProjectID", (9,)) in app.calls,
       f"B: the open must go through openEwProjectID, calls={app.calls}")
@@ -284,7 +284,7 @@ ok("B ok: an exact name opens the project", mark)
 mark = len(failures)
 # --- C: open by unique substring -----------------------------------------
 app = world()
-r = pj.open_project(app, CLIENT, name="65021")
+r = pj.open_project(app, CLIENT, name="12345")
 check(r["ok"] and r["current_project_id"] == 9,
       f"C: a unique substring should resolve, got {r}")
 ok("C ok: a unique substring resolves", mark)
@@ -366,14 +366,14 @@ mark = len(failures)
 # pass between an open and a close. Without that, create_project reported
 # success and the new project came back carrying the template's description.
 app = world(current_index=1, template_folder=tmp)
-r = pj.create_project(app, CLIENT, name="MR3ELE.D002 Test",
+r = pj.create_project(app, CLIENT, name="PRJ.D002 Test",
                       template="IEC", description="Bench rig",
-                      customer="Maritime Robotics")
+                      customer="Example Customer")
 order = [c[0] for c in app.calls]
 check(r["ok"], f"J: creation should succeed, got {r}")
 check(r["project"]["description"] == "Bench rig",
       f"J: the description must survive the template, got {r['project']}")
-check(r["project"]["customer"] == "Maritime Robotics",
+check(r["project"]["customer"] == "Example Customer",
       f"J: the customer must be committed, got {r['project']}")
 check(order.index("openEwProjectID") < order.index("update")
       < order.index("closeEwProjectID"),
@@ -421,7 +421,7 @@ mark = len(failures)
 # gets a half-deleted row, so the close has to come first.
 app = world(current_index=1)
 r = pj.delete_project(app, CLIENT, project_id=9,
-                      confirm_name="MR3ELE.D001.65021 USV")
+                      confirm_name="PRJ.D001.12345 Demo")
 order = [c[0] for c in app.calls]
 check(r["ok"] and r["confirmed_gone"], f"L: the delete should succeed, {r}")
 check("closeEwProjectID" in order
@@ -432,8 +432,8 @@ ok("L ok: the open project is closed before it is removed", mark)
 mark = len(failures)
 # --- M: only the given fields are written, and update runs once -----------
 app = world(current_index=1)
-r = pj.project_properties(app, CLIENT, customer="Maritime Robotics",
-                          contract_number="65021")
+r = pj.project_properties(app, CLIENT, customer="Example Customer",
+                          contract_number="12345")
 setters = [c[0] for c in app.calls]
 check(r["ok"], f"M: the write should succeed, got {r}")
 check(sorted(r["changed"]) == ["contract_number", "customer"],

@@ -314,14 +314,14 @@ def world():
     log: list = []
     parts = [
         FakePart("Wago", "751-9402", "Compact Controller 100", 3,
-                 "Maritime_Robotics", log),
+                 "Custom_Library", log),
         FakePart("Wago", "859-304", "Interposing relay", 0, "Wago", log),
         FakePart("Wago", "2002-1401", "Pass-through terminal", 0, "Wago",
                  log),
         FakePart("Phoenix", "3044092", "Terminal block", 0, "Phoenix", log),
     ]
     symbols = [
-        FakeSymbol("751-9402", 105, "Wago", "751-9402", "Maritime_Robotics",
+        FakeSymbol("751-9402", 105, "Wago", "751-9402", "Custom_Library",
                    log),
         FakeSymbol("859-304", 105, "Wago", "859-304", "Wago", log),
         FakeSymbol("EW_RELAY_COIL", 20, "", "", "IEC", log),
@@ -514,7 +514,7 @@ check(not r["ok"] and "already exists" in r["error"],
       f"L: an existing symbol must not be overwritten by default, got {r}")
 r = lib.import_symbol(app, CLIENT, name="859-304", drawing_path=str(tmp),
                       symbol_type="2d_footprint",
-                      library_code="Maritime_Robotics",
+                      library_code="Custom_Library",
                       description="house footprint at true dimensions",
                       replace=True)
 check(r["ok"], f"L: replace should succeed, got {r}")

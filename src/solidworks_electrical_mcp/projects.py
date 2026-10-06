@@ -73,7 +73,7 @@ def _find(app: Any, client: Any, project_id: int | None = None,
     if p is not None:
         return p
     # findEwProjectByName is exact; fall back to a unique substring so a
-    # caller can say "65021" rather than the full MR3ELE mark.
+    # caller can say "12345" rather than the full project mark.
     needle = str(name).lower()
     hits = [q for q in _each(client, _u(mgr.getEwProjectArray()))
             if needle in str(_u(q.getName()) or "").lower()]

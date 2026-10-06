@@ -93,7 +93,7 @@ modules.
   format, with every setting reading back correct;
   `setAddCreatedFileToProject(True)` turns the silence into
   `EW_OBJECT_NOT_FOUND`. Use `generate_report_drawings` or the GUI.
-- Closing the 181-folio SeaLeopard project takes 0.1 s. Reopening it is the
+- Closing the 181-folio production project takes 0.1 s. Reopening it is the
   expensive half: `create_snapshot` wrote its 12 KB snapshot about 12 minutes
   in and the reopen had still not returned an hour later. The same cycle on a
   4-folio template project takes 1.6 s.

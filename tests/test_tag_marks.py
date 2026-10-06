@@ -4,7 +4,7 @@ SOLIDWORKS keeps the device class in TagRoot with TagNumber beside it, and
 drives its own automatic renumbering from those, NOT from the mark that is
 printed on the drawing. setTag writes only the printed mark, so a component
 can read "K38" on every sheet while being filed as J12 underneath - which is
-exactly what happened to 38 components in the SeaLeopard project. _set_mark
+exactly what happened to 38 components in a real project. _set_mark
 keeps all three in step.
 
 The second trap is the namespace prefix. Relays added alongside an existing K
