@@ -7,6 +7,35 @@ Every entry that records an API behaviour was measured against a running
 SOLIDWORKS Electrical 2025 SP5, not read out of the published help. The help
 is wrong often enough that this distinction is the point.
 
+## Unreleased
+
+### Fixed
+
+- `number_wires`, `generate_arrows` and `optimize_wire_order` could not be
+  scoped to a page from the tool side. The workflows derive the scope from
+  what is passed and refuse a `selection` that contradicts it, but the tools
+  defaulted `selection` to `"all"`, so every call with `pages` or `file_ids`
+  came back "selection='all' with pages given is ambiguous". The tools now
+  default to `None` like the workflows. `test_tool_surface.py` gained check
+  E: a tool may not default a parameter to a literal where its workflow
+  derives that parameter from `None`. Against the old code it names all
+  three tools.
+- `move_symbols` reported ok whatever happened: every per-symbol return code
+  was discarded and no position was read back. It now re-fetches each symbol
+  after the folio closes, reads the position back and fails loudly with a
+  per-symbol result list.
+
+### Measured (SOLIDWORKS Electrical 2025 SP5)
+
+- A symbol displacement below about 0.2 mm is accepted and discarded: the
+  setters and `update` return `EW_NO_ERROR` and the value reads back
+  unchanged. Bisected on a layout footprint: 0.10, 0.15 and 0.20 dropped,
+  0.24 and 0.25 applied, in both directions and with nothing adjacent, so it
+  is a minimum-delta filter, not collision or snap. The filter applies to the
+  net displacement and is enforced when the folio reopens, so
+  `move_symbols` does a sub-threshold move as two hops that each clear it,
+  and closing a hairline gap one symbol at a time cannot work.
+
 ## 0.2.0 - 2026-09-25
 
 The server could only ever act on a project a human had already opened in the

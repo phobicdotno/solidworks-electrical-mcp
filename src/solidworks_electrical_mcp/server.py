@@ -907,7 +907,7 @@ def delete_cable(cable_id: int, confirm_tag: str) -> dict:
 
 
 @mcp.tool
-def number_wires(action: str = "new", selection: str = "all",
+def number_wires(action: str = "new", selection: str | None = None,
                  book_id: int | None = None, folder_id: int | None = None,
                  pages: list | None = None,
                  file_ids: list[int] | None = None,
@@ -919,9 +919,13 @@ def number_wires(action: str = "new", selection: str = "all",
     "new_and_recalculate" also recomputes existing marks, "renumber" throws
     every wire number away and starts again, "remove" strips them.
 
-    ``selection``: "all", "book" (+book_id), "folder" (+folder_id), or
-    "folios" (+pages or file_ids). ``renumber_manual`` decides whether a
-    number somebody typed by hand is fair game; it is off by default.
+    The scope is DERIVED from what you pass: pages/file_ids means those
+    folios, book_id that book, folder_id that folder, nothing at all the
+    whole project. ``selection`` can name it outright, but naming one that
+    contradicts the other arguments is refused rather than guessed.
+
+    ``renumber_manual`` decides whether a number somebody typed by hand is
+    fair game; it is off by default.
     """
     return _run(auto.number_wires, action=action, selection=selection,
                 book_id=book_id, folder_id=folder_id, pages=pages,
@@ -950,7 +954,8 @@ def number_marks(action: str = "update",
 
 
 @mcp.tool
-def generate_arrows(action: str = "auto_connect", selection: str = "all",
+def generate_arrows(action: str = "auto_connect",
+                    selection: str | None = None,
                     book_id: int | None = None,
                     folder_id: int | None = None, pages: list | None = None,
                     file_ids: list[int] | None = None,
@@ -971,7 +976,8 @@ def generate_arrows(action: str = "auto_connect", selection: str = "all",
 
 
 @mcp.tool
-def optimize_wire_order(selection: str = "all", book_id: int | None = None,
+def optimize_wire_order(selection: str | None = None,
+                        book_id: int | None = None,
                         folder_id: int | None = None,
                         pages: list | None = None,
                         file_ids: list[int] | None = None,

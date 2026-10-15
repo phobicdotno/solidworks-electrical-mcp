@@ -20,6 +20,7 @@ Cases:
   B. no tool declares a parameter it never forwards
   C. no workflow parameter is unreachable from its tool
   D. every tool has a docstring (it is the client-facing description)
+  E. a tool's default does not contradict its workflow's default
 
 Run directly:
     .venv/Scripts/python.exe tests/test_tool_surface.py
@@ -159,6 +160,67 @@ check(not unreachable_any,
       "C: workflow parameters no tool can reach:\n    "
       + "\n    ".join(unreachable_any))
 ok("C ok: every workflow parameter is reachable from its tool", mark)
+
+mark = len(failures)
+# --- E: defaults must agree -----------------------------------------------
+# A workflow whose default is None is usually saying "derive this from the
+# other arguments". A tool that defaults the same parameter to a literal
+# passes that literal on every call, so the derivation never runs - and if
+# the workflow refuses the contradiction, the tool cannot express the
+# default case at all.
+#
+# That shipped: number_wires, generate_arrows and optimize_wire_order all
+# derived their scope from None, while their tools defaulted selection to
+# "all". Every page-scoped call came back "selection='all' with pages given
+# is ambiguous", which made the tools unusable for the thing they were fixed
+# to do. Nothing in checks A-D looks at defaults.
+def defaults_of(fn, skip=0):
+    a = fn.args
+    names = [x.arg for x in (a.posonlyargs + a.args)][skip:]
+    vals = list(a.defaults)
+    out = {}
+    if vals:
+        for name, node in zip(names[-len(vals):], vals):
+            out[name] = ast.dump(node)
+    for kw, node in zip(a.kwonlyargs, a.kw_defaults):
+        if node is not None:
+            out[kw.arg] = ast.dump(node)
+    return out
+
+
+NONE = ast.dump(ast.Constant(value=None))
+clashes = []
+for tool in tools:
+    target = target_alias = None
+    for sub in ast.walk(tool):
+        if not isinstance(sub, ast.Call):
+            continue
+        f = sub.func if isinstance(sub.func, ast.Attribute) else None
+        cand = f if (f and isinstance(f.value, ast.Name)
+                     and f.value.id in mod_funcs
+                     and f.attr in mod_funcs[f.value.id]) else None
+        if cand is None and sub.args:
+            a0 = sub.args[0]
+            if (isinstance(a0, ast.Attribute) and isinstance(a0.value, ast.Name)
+                    and a0.value.id in mod_funcs
+                    and a0.attr in mod_funcs[a0.value.id]):
+                cand = a0
+        if cand is not None:
+            target_alias, target = cand.value.id, cand.attr
+            break
+    if target is None:
+        continue
+    t_def = defaults_of(tool)
+    w_def = defaults_of(mod_funcs[target_alias][target], skip=2)
+    for name, wval in w_def.items():
+        if name in t_def and wval == NONE and t_def[name] != NONE:
+            clashes.append(f"{tool.name}.{name} defaults to a literal while "
+                           f"{target_alias}.{target} derives it from None")
+
+check(not clashes,
+      "E: tool defaults that override a derived workflow default:\n    "
+      + "\n    ".join(clashes))
+ok("E ok: no tool default contradicts its workflow default", mark)
 
 mark = len(failures)
 # --- D: the docstring is the client-facing description --------------------
