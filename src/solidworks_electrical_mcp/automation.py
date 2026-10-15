@@ -177,7 +177,8 @@ def _resolve_selection(selection: str | None, book_id: int | None,
         raise ValueError(
             f"selection={selection!r} with pages/file_ids given is "
             f"ambiguous; pass selection='folios' to act on those pages, or "
-            f"drop them to act on the {selection}")
+            f"drop them to act on "
+            + ('the whole project' if selection == 'all' else f'that {selection}'))
     if selection != "book" and book_id is not None:
         raise ValueError(f"selection={selection!r} with book_id given is "
                          f"ambiguous")
