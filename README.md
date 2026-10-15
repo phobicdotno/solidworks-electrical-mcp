@@ -84,8 +84,11 @@ the attribute SOLIDWORKS resolves to the mark; `#MARK`, `#COMPONENT_TAG`,
 ### Project-wide operations
 
 Each of these rewrites a whole project at once and has no undo, so each takes
-an explicit action and an explicit selection (`all`, a book, a folder, or a
-list of folios). Take a snapshot first.
+an explicit action, and its scope is derived from what you pass: `pages` or
+`file_ids` means those folios, `book_id` that book, `folder_id` that folder,
+nothing at all the whole project. `selection` can name the scope outright, but
+one that contradicts the other arguments is refused rather than guessed. Take
+a snapshot first.
 
 | Tool | Purpose |
 |---|---|

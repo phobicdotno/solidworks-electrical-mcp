@@ -967,6 +967,9 @@ def generate_arrows(action: str = "auto_connect",
     Arrows are how a wire leaving one sheet is picked up on another, so
     "auto_connect" is what turns a set of drawn pages into a wired project.
     "reconnect" refreshes them; "remove" breaks those links.
+
+    The scope is DERIVED from what you pass, as for ``number_wires``:
+    pages/file_ids, book_id, folder_id, or nothing for the whole project.
     """
     return _run(auto.generate_arrows, action=action, selection=selection,
                 book_id=book_id, folder_id=folder_id, pages=pages,
@@ -989,6 +992,9 @@ def optimize_wire_order(selection: str | None = None,
     This decides which terminal a wire physically lands on when several share
     a potential, which is what makes a from-to wiring list buildable rather
     than merely correct.
+
+    The scope is DERIVED from what you pass, as for ``number_wires``:
+    pages/file_ids, book_id, folder_id, or nothing for the whole project.
     """
     return _run(auto.optimize_wire_order, selection=selection,
                 book_id=book_id, folder_id=folder_id, pages=pages,

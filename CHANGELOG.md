@@ -15,7 +15,8 @@ is wrong often enough that this distinction is the point.
   scoped to a page from the tool side. The workflows derive the scope from
   what is passed and refuse a `selection` that contradicts it, but the tools
   defaulted `selection` to `"all"`, so every call with `pages` or `file_ids`
-  came back "selection='all' with pages given is ambiguous". The tools now
+  came back "selection='all' with pages/file_ids given is ambiguous". The
+  tools now
   default to `None` like the workflows. `test_tool_surface.py` gained check
   E: a tool may not default a parameter to a literal where its workflow
   derives that parameter from `None`. Against the old code it names all
