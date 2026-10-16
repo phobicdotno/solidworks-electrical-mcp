@@ -162,6 +162,7 @@ close and is instant either way.
 | `add_component(tag, manufacturer, reference, page?, after_tag?, shift_following?, x?, y?, dry_run=True)` | Build a unit with no source to copy. The symbol comes from the manufacturer part itself; scale and rotation from a neighbour, because a cabinet footprint is drawn scaled to real millimetres. `shift_following` inserts into a rail, pushing everything right of `after_tag` along by one device pitch. |
 | `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device. Symbols, cross-references and the BOM are linked by id and follow it; the mark spelled out as literal text does not, so every such place is listed for a human to judge. |
 | `delete_component(component_id? / tag?, pages?, close_gap?)` | Remove a component and its symbols (the undo for a clone or an add). `close_gap` pulls the rail back over the hole. |
+| `rebind_symbol(symbol_id, component_id, dry_run=True)` | Point a drawn symbol at another component, keeping position and connections. For a pasted page that draws its own copy of a device: bind it to the real one, then delete the copy. |
 | `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device; reports what follows the rename and what does not. |
 | `renumber_components(renames, dry_run=True)` | Retag a whole run in one pass, collision-safe, with temp marks when the old and new sets overlap. |
 | `audit_tag_roots(tag_contains?, fix?)` | Find and repair components whose stored tag root/number disagree with their mark. |

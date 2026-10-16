@@ -9,7 +9,32 @@ is wrong often enough that this distinction is the point.
 
 ## Unreleased
 
+### Added
+
+- `rebind_symbol(symbol_id, component_id)`: point a drawn symbol at another
+  component. A page pasted in from another project draws its own copies of
+  the devices on it, so the parts list counts them twice; rebinding the
+  pasted symbol to the real component lets the copy be deleted. Closes the
+  folio for the write when it is open in the editor, reads the binding back.
+
 ### Fixed
+
+- `rename_component`, `renumber_components`, `clone_component` and
+  `add_component` tested a new mark against every component in the
+  project. A mark only has to be unique among siblings: SOLIDWORKS builds
+  the tag path from function, location, parent and mark, and every PLC
+  rack's first module is `N1`. Renaming a rack coupler to `N1` was refused
+  as "already exists more than once", and a renumber could not give a
+  module a mark a module of another rack holds. The checks now compare
+  (function, location, parent, mark). `test_sibling_marks.py` cases A to D;
+  against the old code A and C fail.
+- `export_folio_pdf` reported `file_exists: false` and `ok: false` for every
+  successful export. SOLIDWORKS does not write the name it is given: it
+  puts the book number in front (`out.pdf` becomes `1-out.pdf`), one file
+  per book, and returns `EW_NO_ERROR`. The export now finds that file and,
+  with a single book, moves it to the requested path (`renamed_from` in the
+  result); further book files are listed in `also_written`.
+  `test_sibling_marks.py` case E.
 
 - `number_wires`, `generate_arrows` and `optimize_wire_order` could not be
   scoped to a page from the tool side. The workflows derive the scope from

@@ -1622,6 +1622,19 @@ def delete_component(component_id: int | None = None,
 
 
 @mcp.tool
+def rebind_symbol(symbol_id: int, component_id: int,
+                  dry_run: bool = True) -> dict:
+    """Point a drawn symbol at another component, keeping its position and
+    connections. Use it when a pasted page draws its own copy of a device
+    that already exists: bind the symbol to the real component, then remove
+    the copy with delete_component. Symbol ids come from folio_symbols.
+    ``dry_run`` (default True) returns the plan; the result carries an
+    ``undo`` hint."""
+    return _run(wf.rebind_symbol, symbol_id=symbol_id,
+                component_id=component_id, dry_run=dry_run)
+
+
+@mcp.tool
 def add_component(tag: str, manufacturer: str, reference: str,
                   description: str | None = None,
                   location_tag: str | None = None,

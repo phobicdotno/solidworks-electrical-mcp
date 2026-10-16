@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 import re
 import tempfile
 from typing import Any, Callable, Iterable
@@ -493,16 +494,61 @@ def export_folio_pdf(app: Any, client: Any, output_path: str,
         return {"ok": False, "output_path": output_path, "folios": resolved,
                 "steps": steps,
                 "error": f"setExportToPDFFileName failed: {_rc_name(rc_name)}"}
+    started = time.time()
     rc_exp = step("exportPDF", exp.exportPDF)
-    exists = os.path.isfile(output_path)
-    return {
+    written = _find_pdf_written(output_path, started)
+    renamed_from = None
+    if written and written != output_path and len(
+            _book_prefixed_pdfs(output_path, started)) == 1:
+        # SOLIDWORKS writes "<book>-<name>.pdf" next to the requested path
+        # (one file per book). With a single book, hand back the file the
+        # caller asked for.
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        os.replace(written, output_path)
+        renamed_from, written = written, output_path
+    exists = bool(written) and os.path.isfile(written)
+    out = {
         "ok": rc_exp in (0, None) and exists,
-        "output_path": output_path,
+        "output_path": written or output_path,
         "file_exists": exists,
-        "size_bytes": os.path.getsize(output_path) if exists else 0,
+        "size_bytes": os.path.getsize(written) if exists else 0,
         "folios": resolved,
         "steps": steps,
     }
+    if renamed_from:
+        out["renamed_from"] = renamed_from
+    others = [x for x in _book_prefixed_pdfs(output_path, started)
+              if x != written]
+    if others:
+        out["also_written"] = others
+    return out
+
+
+def _book_prefixed_pdfs(output_path: str, since: float) -> list[str]:
+    """``<n>-<name>.pdf`` files next to ``output_path`` written since ``since``.
+
+    exportPDF does not write the name it is given: it puts the book number in
+    front ("out.pdf" -> "1-out.pdf"), one file per book, and still returns
+    EW_NO_ERROR. Measured on 2025 SP5.
+    """
+    folder, name = os.path.split(output_path)
+    rx = re.compile(r"^\d+-" + re.escape(name) + r"$", re.IGNORECASE)
+    hits = []
+    for fn in os.listdir(folder or "."):
+        full = os.path.join(folder, fn)
+        if rx.match(fn) and os.path.isfile(full) \
+                and os.path.getmtime(full) >= since - 2:
+            hits.append(full)
+    return sorted(hits)
+
+
+def _find_pdf_written(output_path: str, since: float) -> str | None:
+    """The file exportPDF actually wrote for ``output_path``, or None."""
+    if os.path.isfile(output_path) and os.path.getmtime(output_path) >= since - 2:
+        return output_path
+    hits = _book_prefixed_pdfs(output_path, since)
+    return hits[0] if hits else None
 
 
 def regenerate_title_blocks(app: Any, client: Any) -> dict:
@@ -626,6 +672,54 @@ def _find_one_component(app: Any, client: Any, tag: str) -> Any:
     return hits[0]
 
 
+def _opt_id(comp: Any, getter: str) -> Any:
+    """``comp.<getter>()`` unwrapped, or None when the object has no such
+    member (test doubles, or a COM object of another type)."""
+    fn = getattr(comp, getter, None)
+    if fn is None:
+        return None
+    try:
+        return _u(fn())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sibling_key(comp: Any, mark: str | None = None) -> tuple:
+    """What a mark has to be unique within: (function, location, parent, mark).
+
+    SOLIDWORKS builds a component's tag path from its function, its location,
+    its parent chain and its own mark, so two components clash only when all
+    four agree. A project-wide test on the bare mark is wrong for any child
+    component: every PLC rack's first module is ``N1``, so renaming a rack
+    coupler to ``N1`` read as a clash with the modules of every other rack.
+    """
+    return (_opt_id(comp, "getFunctionID"), _opt_id(comp, "getLocationID"),
+            _opt_id(comp, "getParentID"),
+            str(_u(comp.getTag())) if mark is None else mark)
+
+
+def _marks_in_use(app: Any, client: Any) -> dict:
+    """``_sibling_key`` -> [component ids] for every component in the project."""
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectComponentManager())
+    used: dict = {}
+    for c in _each(client, _u(mgr.getEwProjectComponentArray())):
+        used.setdefault(_sibling_key(c), []).append(_u(c.getID()))
+    return used
+
+
+def _check_mark_free(app: Any, client: Any, key: tuple,
+                     ignore_ids: set | frozenset = frozenset()) -> None:
+    """Raise when another component already holds this mark among its
+    siblings (same function, location and parent)."""
+    holders = [i for i in _marks_in_use(app, client).get(key, [])
+               if i not in ignore_ids]
+    if holders:
+        where = "" if key[2] in (None, -1) else f" under parent id {key[2]}"
+        raise ValueError(f"a component tagged {key[3]!r} already exists"
+                         f"{where} (component id {holders[0]})")
+
+
 def _symbols_of(app: Any, client: Any, file_id: int, component_id: int) -> list:
     proj = _project(app)
     sym_mgr = _u(proj.getEwProjectSymbolManager())
@@ -720,16 +814,9 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
         # Same class, different casing ("k33"): write the project's casing so
         # the mark cannot drift from the root the rule names.
         new_bare = src_root + new_bare[len(new_root):]
-    try:
-        _find_one_component(app, client, new_bare)
-    except LookupError as e:
-        if "ambiguous" in str(e):
-            # Several components already carry this mark; adding another is
-            # never what the caller meant.
-            raise ValueError(
-                f"{new_bare!r} already exists more than once: {e}") from e
-    else:
-        raise ValueError(f"a component tagged {new_bare!r} already exists")
+    # The clone inherits the source's function, location and parent, so the
+    # mark has to be free among the source's siblings, not project-wide.
+    _check_mark_free(app, client, _sibling_key(src, new_bare))
 
     src_symbols: list[dict] = []
     folio_row = None
@@ -1139,6 +1226,69 @@ def _row_symbols_right_of(app: Any, client: Any, file_id: int, y0: float,
     return out
 
 
+def rebind_symbol(app: Any, client: Any, symbol_id: int, component_id: int,
+                  dry_run: bool = True) -> dict:
+    """Point a drawn symbol at another component.
+
+    A page pasted in from another project brings its own copies of the
+    devices it draws, so the same physical device ends up as two components:
+    one drawn on the original pages, one only on the pasted page. The parts
+    list then counts it twice. Binding the pasted page's symbol to the real
+    component (``IEwProjectSymbolX.setObjectID``) leaves one component, after
+    which the copy can be removed with ``delete_component``.
+
+    Position, rotation and connections stay as they are. A folio open in the
+    editor would write its own copy back over the change, so the folio is
+    closed for the write and reopened afterwards.
+    """
+    proj = _project(app)
+    sym = _u(_u(proj.getEwProjectSymbolManager()).getProjectSymbolByID(
+        int(symbol_id)))
+    if sym is None:
+        raise LookupError(f"no symbol with id {symbol_id}")
+    cmgr = _u(proj.getEwProjectComponentManager())
+    new = _u(cmgr.findEwProjectComponentByID(int(component_id)))
+    if new is None:
+        raise LookupError(f"no component with id {component_id}")
+    old_id = _u(sym.getObjectID())
+    old = _u(cmgr.findEwProjectComponentByID(int(old_id))) if old_id not in (
+        None, -1) else None
+    fid = _u(sym.getFileID())
+    f = find_folio(app, client, file_id=fid)
+    plan = {
+        "symbol_id": int(symbol_id),
+        "symbol_name": _u(sym.getEwSymbolName()),
+        "folio": _folio_row(f),
+        "from_component": None if old is None else {
+            "id": old_id, "tag_path": _u(old.getTagPath())},
+        "to_component": {"id": int(component_id),
+                         "tag_path": _u(new.getTagPath())},
+    }
+    if old_id == int(component_id):
+        return {"ok": True, "dry_run": dry_run, "plan": plan,
+                "note": "the symbol is already bound to that component"}
+    if dry_run:
+        return {"ok": True, "dry_run": True, "plan": plan}
+    was_open = bool(_u(f.isOpen()))
+    rc_close = _rc(f.close()) if was_open else None
+    rc_set = _rc(sym.setObjectID(int(component_id)))
+    rc_upd = _rc(sym.update())
+    rc_open = _rc(f.open()) if was_open else None
+    sym2 = _u(_u(proj.getEwProjectSymbolManager()).getProjectSymbolByID(
+        int(symbol_id)))
+    now = _u(sym2.getObjectID()) if sym2 is not None else None
+    return {
+        "ok": now == int(component_id) and rc_set in (0, None)
+              and rc_upd in (0, None),
+        "dry_run": False, "plan": plan, "bound_to_now": now,
+        "folio_was_open": was_open,
+        "steps": {"close": rc_close, "setObjectID": rc_set, "update": rc_upd,
+                  "open": rc_open},
+        "undo": f"rebind_symbol(symbol_id={int(symbol_id)}, "
+                f"component_id={old_id})",
+    }
+
+
 def add_component(app: Any, client: Any, tag: str, manufacturer: str,
                   reference: str, description: str | None = None,
                   location_tag: str | None = None,
@@ -1172,15 +1322,8 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     new_bare = tag.strip().lstrip("-")
     new_root = _tag_root(new_bare)
 
-    # 1. the tag must be free, and must match the class this part already has
-    try:
-        _find_one_component(app, client, new_bare)
-    except LookupError as e:
-        if "ambiguous" in str(e):
-            raise ValueError(f"{new_bare!r} already exists more than once: {e}") from e
-    else:
-        raise ValueError(f"a component tagged {new_bare!r} already exists")
-
+    # 1. the tag must match the class this part already has (whether it is
+    #    free is checked once the location and parent are known, below)
     part_root, examples = _root_in_use_for_part(app, client, manufacturer,
                                                 reference)
     if allow_new_root:
@@ -1211,6 +1354,18 @@ def add_component(app: Any, client: Any, tag: str, manufacturer: str,
     parent_id = None
     if parent_tag:
         parent_id = _u(_find_one_component(app, client, parent_tag).getID())
+    # The mark only has to be free among the new component's siblings. The
+    # function is not chosen here, so any function matches.
+    want_parent = -1 if parent_id is None else parent_id
+    for (fn_id, loc_id, par_id, mark), ids in _marks_in_use(app, client).items():
+        if mark != new_bare or (par_id if par_id is not None else -1) != want_parent:
+            continue
+        if location_id is not None and loc_id is not None and loc_id != location_id:
+            continue
+        raise ValueError(f"a component tagged {new_bare!r} already exists"
+                         + ("" if parent_id is None
+                            else f" under parent id {parent_id}")
+                         + f" (component id {ids[0]})")
 
     # 3. the page, the symbol it will be drawn with, and where it goes
     folio_row = None
@@ -1566,14 +1721,7 @@ def rename_component(app: Any, client: Any, tag: str, new_tag: str,
         new_bare = src_root + new_bare[len(new_root):]
     if new_bare == old_bare:
         raise ValueError(f"{old_bare!r} already has that mark")
-    try:
-        _find_one_component(app, client, new_bare)
-    except LookupError as e:
-        if "ambiguous" in str(e):
-            raise ValueError(
-                f"{new_bare!r} already exists more than once: {e}") from e
-    else:
-        raise ValueError(f"a component tagged {new_bare!r} already exists")
+    _check_mark_free(app, client, _sibling_key(src, new_bare), {src_id})
 
     bound = _symbols_bound_to(app, client, src_id)
     text_refs = _text_references(app, client, old_bare) if scan_text else None
@@ -1669,34 +1817,45 @@ def renumber_components(app: Any, client: Any, renames: list,
         resolved.append({"old": old, "new": new, "root": root,
                          "id": _u(comp.getID()), "component": comp})
 
+    # Marks are unique among siblings (same function, location and parent),
+    # not project-wide: every rack's first module is N1. So every check below
+    # works on sibling keys, and only a sibling can block a target.
+    for r in resolved:
+        r["src_key"] = _sibling_key(r["component"])
+        r["dst_key"] = _sibling_key(r["component"], r["new"])
     sources = {r["old"] for r in resolved}
     targets = [r["new"] for r in resolved]
-    dupes = sorted({t for t in targets if targets.count(t) > 1})
+    src_keys = {r["src_key"] for r in resolved}
+    dst_keys = [r["dst_key"] for r in resolved]
+    dupes = sorted({k[3] for k in dst_keys if dst_keys.count(k) > 1})
     if dupes:
         raise ValueError(f"the same target mark is used more than once: {dupes}")
 
     # every existing mark, so a target cannot land on a device we are not moving
-    taken = set()
+    taken: set = set()
     for c in _each(client, _u(_u(proj.getEwProjectComponentManager())
                               .getEwProjectComponentArray())):
-        taken.add(str(_u(c.getTag())))
-    clashes = sorted(t for t in targets if t in taken and t not in sources)
+        taken.add(_sibling_key(c))
+    clashes = sorted(k[3] for k in dst_keys if k in taken and k not in src_keys)
     if clashes:
         raise ValueError(
             f"these target marks already belong to devices that are not part "
             f"of this renumber: {clashes}")
 
-    overlap = sorted(set(targets) & sources)
+    overlap = sorted({k[3] for k in set(dst_keys) & src_keys})
     temps: dict[str, str] = {}
     if overlap:
         n = 9900
+        used_temp: set = set()
         for r in resolved:
             while True:
                 cand = f"{r['root']}{n}"
                 n += 1
-                if (cand not in taken and cand not in temps.values()
-                        and cand not in targets):
+                ck = r["src_key"][:3] + (cand,)
+                if (ck not in taken and ck not in used_temp
+                        and ck not in dst_keys):
                     break
+            used_temp.add(ck)
             temps[r["old"]] = cand
 
     text_refs = (_text_references_multi(app, client, sorted(sources))
