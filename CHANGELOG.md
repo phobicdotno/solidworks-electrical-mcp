@@ -30,7 +30,18 @@ is wrong often enough that this distinction is the point.
   front of one of its open dialogs moves the keyboard focus off the dialog
   and typed text is silently lost; `SendInput` with `KEYEVENTF_UNICODE`
   reached nothing in SOLIDWORKS dialogs, virtual-key presses do; on a
-  drawing a negative wheel step zooms in.
+  drawing a negative wheel step zooms in. `gui_keys` also knows F1-F12,
+  pageup, pagedown and the apps key.
+
+### Measured: revisions
+
+- No COM call creates or validates a revision. `IEwProjectFileX` only
+  writes a revision's text (`setRevisionTranslatableTextAt(rev, 0, lang,
+  text)`, measured: lands in the title block CHANGES field). Do not revise
+  pages one at a time in the GUI: on the **book**, Revisions..., select the
+  new revision, Validate, then Verify. SOLIDWORKS then asks whether to set
+  all book documents to that revision; Yes moves every page (113 in one
+  step), copying the book revision's description.
 - `rebind_symbol(symbol_id, component_id)`: point a drawn symbol at another
   component. A page pasted in from another project draws its own copies of
   the devices on it, so the parts list counts them twice; rebinding the

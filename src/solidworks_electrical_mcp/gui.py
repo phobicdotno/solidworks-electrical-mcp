@@ -164,7 +164,10 @@ _VK = {"enter": win32con.VK_RETURN, "esc": win32con.VK_ESCAPE,
        "delete": win32con.VK_DELETE, "backspace": win32con.VK_BACK,
        "space": win32con.VK_SPACE, "f2": win32con.VK_F2, "f5": win32con.VK_F5,
        "ctrl": win32con.VK_CONTROL, "shift": win32con.VK_SHIFT,
-       "alt": win32con.VK_MENU, "home": win32con.VK_HOME, "end": win32con.VK_END}
+       "alt": win32con.VK_MENU, "home": win32con.VK_HOME, "end": win32con.VK_END,
+       "pageup": win32con.VK_PRIOR, "pagedown": win32con.VK_NEXT,
+       "apps": win32con.VK_APPS,
+       **{f"f{n}": win32con.VK_F1 + n - 1 for n in range(1, 13)}}
 
 
 def keys(combo: str, title_hint: str = TITLE_HINT) -> dict:
