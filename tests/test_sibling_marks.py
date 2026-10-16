@@ -185,6 +185,14 @@ if hasattr(wf, "_find_pdf_written"):
         Path(d, "old-1-out.pdf").write_bytes(b"x")
         check(len(wf._book_prefixed_pdfs(want, t0)) == 1,
               "E: only <number>-<name>.pdf counts as a book file")
+        check(wf._book_prefixed_pdfs(os.path.join(d, "missing", "x.pdf"),
+                                     t0) == [],
+              "E: a missing folder means no book files, not an exception")
+        Path(d, "10-out.pdf").write_bytes(b"x")
+        Path(d, "2-out.pdf").write_bytes(b"x")
+        names = [os.path.basename(x) for x in wf._book_prefixed_pdfs(want, t0)]
+        check(names == ["1-out.pdf", "2-out.pdf", "10-out.pdf"],
+              f"E: book files must come in book order, got {names}")
     print("E ok: the export finds the file SOLIDWORKS really writes")
 else:
     check(False, "E: the export has no way to find the book-prefixed file")
@@ -236,6 +244,21 @@ if hasattr(wf, "rebind_symbol"):
               f"F: an open folio must be closed for the write and reopened, "
               f"got {folio.log}")
         check("component_id=2" in r["undo"], "F: undo must name the old id")
+        # a symbol with no previous binding has no undo target
+        sym.obj = -1
+        r = wf.rebind_symbol(None, None, symbol_id=99, component_id=2,
+                             dry_run=False)
+        check(r["ok"] and r["undo"] is None and "undo_note" in r,
+              f"F: no undo may point at component -1, got {r.get('undo')}")
+        # a folio that will not close is refused, nothing written
+        folio2 = Folio(is_open=True)
+        folio2.close = lambda: 13
+        wf.find_folio = lambda app, client, **k: folio2
+        before = sym.obj
+        r = wf.rebind_symbol(None, None, symbol_id=99, component_id=1,
+                             dry_run=False)
+        check(not r["ok"] and sym.obj == before,
+              "F: a folio that will not close must block the write")
     finally:
         wf._project, wf.find_folio, wf._folio_row = orig
     print("F ok: rebind_symbol rebinds, keeps the folio open state, gives undo")

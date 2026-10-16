@@ -26,14 +26,17 @@ is wrong often enough that this distinction is the point.
   rack's first module is `N1`. Renaming a rack coupler to `N1` was refused
   as "already exists more than once", and a renumber could not give a
   module a mark a module of another rack holds. The checks now compare
-  (function, location, parent, mark). `test_sibling_marks.py` cases A to D;
-  against the old code A and C fail.
+  (parent, mark); top-level components share one group, so they stay as
+  strict as before. `test_sibling_marks.py` cases A to D; against the old
+  code A and C fail.
 - `export_folio_pdf` reported `file_exists: false` and `ok: false` for every
   successful export. SOLIDWORKS does not write the name it is given: it
   puts the book number in front (`out.pdf` becomes `1-out.pdf`), one file
   per book, and returns `EW_NO_ERROR`. The export now finds that file and,
   with a single book, moves it to the requested path (`renamed_from` in the
-  result); further book files are listed in `also_written`.
+  result); further book files are listed in `also_written`, in book order.
+  A target held open by a viewer leaves the book file in place with a
+  `warning` instead of failing an export that worked.
   `test_sibling_marks.py` case E.
 
 - `number_wires`, `generate_arrows` and `optimize_wire_order` could not be
