@@ -643,16 +643,21 @@ def list_wires(app: Any, client: Any, mark_contains: str | None = None,
     rows, scanned = [], 0
     for w in _each(client, _u(mgr.getEwProjectWireArray())):
         scanned += 1
-        row = _wire_row(w)
-        if needle and needle not in str(row["mark"] or "").lower():
+        # Test the filters on the one or two getters they need before
+        # building the row. A row is eighteen COM round trips, and a
+        # filtered call used to pay all of them for every wire in the
+        # project to keep a handful: 763 wires, one device, fourteen
+        # thousand calls. The filters are the cheap part; do them first.
+        if component_id is not None and component_id not in (
+                _u(w.getOriginComponentID()),
+                _u(w.getDestinationComponentID())):
+            continue
+        if needle and needle not in str(_text(w, "getTag") or "").lower():
             continue
         if eq_needle and eq_needle not in str(
-                row["equipotential"] or "").lower():
+                _text(w, "getEquipotential") or "").lower():
             continue
-        if component_id is not None and component_id not in (
-                row["from_component_id"], row["to_component_id"]):
-            continue
-        rows.append(row)
+        rows.append(_wire_row(w))
         if len(rows) >= limit:
             break
     return {"count": len(rows), "scanned": scanned, "limit": limit,
