@@ -1998,6 +1998,84 @@ def move_symbols(moves: list, box: dict | None = None,
 
 
 @mcp.tool
+def list_lines(page: str | int | None = None,
+               file_id: int | None = None) -> dict:
+    """Every line (wire segment) on one page: both ends, mesh, wire style,
+    and the wire mark / cable core it shows. Use it to find the line ids
+    edit_lines works on."""
+    return _run(wf.list_lines, page=page, file_id=file_id)
+
+
+@mcp.tool
+def edit_lines(ops: list, page: str | int | None = None,
+               file_id: int | None = None, box: dict | None = None,
+               dry_run: bool = True) -> dict:
+    """Re-route, draw or remove wire segments on ONE page in one pass.
+
+    ``ops``, applied in order: {"op":"set","line_id",x1?,y1?,x2?,y2?} moves
+    line ends; {"op":"add",x1,y1,x2,y2,"like_line_id"|"wire_style_id"} draws
+    a schematic line; {"op":"remove","line_id"}. Moving an end onto another
+    connection point re-routes the conductor to that terminal. Ends must stay
+    inside the drawable box. Preview with dry_run (default), then apply; the
+    folio is closed once and reopened once, and the page's lines are re-read
+    afterwards because SOLIDWORKS can merge segments and change line ids.
+    """
+    return _run(wf.edit_lines, ops=ops, page=page, file_id=file_id, box=box,
+                dry_run=dry_run)
+
+
+# --- Last-resort GUI driving -------------------------------------------------
+# Only for operations the COM API cannot do at all (associating a cable core
+# with a wire, editing a plain drawing text or multiline text, creating a
+# revision). Every input first brings SOLIDWORKS Electrical (or one of its own
+# dialogs) to the front and refuses if another application keeps the focus.
+# These take the user's mouse and keyboard: ask before using them on a PC
+# somebody is working at, and look at a gui_screenshot after every step.
+
+def _gui():
+    from . import gui  # pywin32 + Pillow; imported lazily
+    return gui
+
+
+@mcp.tool
+def gui_screenshot(path: str | None = None, whole_screen: bool = False) -> dict:
+    """LAST RESORT. Capture the SOLIDWORKS Electrical window to a PNG and
+    return its path (Read it to look). Pixel coordinates in the image are the
+    coordinates gui_click / gui_scroll take."""
+    return _gui().screenshot(path=path, whole_screen=whole_screen)
+
+
+@mcp.tool
+def gui_click(x: int, y: int, button: str = "left",
+              double: bool = False) -> dict:
+    """LAST RESORT. Click at (x, y) in the SOLIDWORKS window (screenshot
+    pixels). button: left | right."""
+    return _gui().click(x, y, button=button, double=double)
+
+
+@mcp.tool
+def gui_scroll(x: int, y: int, clicks: int) -> dict:
+    """LAST RESORT. Mouse wheel at (x, y). On a drawing NEGATIVE clicks zoom
+    in and positive zoom out; in a list it scrolls."""
+    return _gui().scroll(x, y, clicks)
+
+
+@mcp.tool
+def gui_keys(combo: str) -> dict:
+    """LAST RESORT. Press a key or chord in SOLIDWORKS: "enter", "esc",
+    "ctrl+a", "ctrl+s", "f5". Closing chords are refused."""
+    return _gui().keys(combo)
+
+
+@mcp.tool
+def gui_type(text: str) -> dict:
+    """LAST RESORT. Type text into the focused SOLIDWORKS control (a
+    property cell, a dialog field, the multiline text editor; use
+    gui_keys("enter") for a new line there)."""
+    return _gui().type_text(text)
+
+
+@mcp.tool
 def add_text(text: str, x: float, y: float, page: str | int | None = None,
              file_id: int | None = None, rotation: float = 0.0,
              box: dict | None = None, dry_run: bool = True) -> dict:

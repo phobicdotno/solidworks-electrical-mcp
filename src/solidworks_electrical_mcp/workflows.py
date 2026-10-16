@@ -2354,6 +2354,12 @@ def _folio_lines(app: Any, client: Any, file_id: int) -> list:
         arr = _u(lmgr.getEwProjectLineArrayFromFileID(int(file_id)))
         scoped = True
     except Exception:  # noqa: BLE001
+        arr = None
+    if arr is None:
+        # The per-file call answers NULL, not an error, for a folio that is
+        # closed in the editor (seen 2026-10-16 on a closed schematic page).
+        # Treating that as "no lines" made move_symbols drag no wires at all
+        # while reporting success, so fall back to the full scan.
         arr = _u(lmgr.getEwProjectLineArray())
         scoped = False
     out = []
@@ -3580,3 +3586,176 @@ def remove_texts(app: Any, client: Any, text_ids: list[int] | None = None,
             "steps": steps,
             "note": "the folio was closed once and reopened once for the "
                     "whole batch"}
+
+
+# ---------------------------------------------------------------------------
+# Lines (wire segments) on one folio
+# ---------------------------------------------------------------------------
+
+def _line_row(ln: Any) -> dict:
+    return {"line_id": _u(ln.getID()),
+            "x1": float(_u(ln.getStartPointXPosition())),
+            "y1": float(_u(ln.getStartPointYPosition())),
+            "x2": float(_u(ln.getEndPointXPosition())),
+            "y2": float(_u(ln.getEndPointYPosition())),
+            "mesh_id": _u(ln.getMeshID()),
+            "equipotential_id": _u(ln.getEquipotentialID()),
+            "wire_style_id": _u(ln.getWireStyleID()),
+            "line_type": _u(ln.getEwLineType()),
+            "associated_type": _u(ln.getAssociatedType()),
+            "wire_mark": _u(ln.getWireMarkText()),
+            "cable_core": _u(ln.getCableCoreText())}
+
+
+def list_lines(app: Any, client: Any, page: str | int | None = None,
+               file_id: int | None = None) -> dict:
+    """Every line (wire segment) drawn on one folio, with both ends.
+
+    A line is the drawn segment; the wire is what SOLIDWORKS derives from
+    lines whose ends meet connection points. Rows carry the mesh (one per
+    connected run), the wire style, and the wire mark / cable core text the
+    line shows.
+    """
+    f = find_folio(app, client, page=page, file_id=file_id)
+    fid = _u(f.getID())
+    rows = [_line_row(ln["obj"]) for ln in _folio_lines(app, client, fid)]
+    return {"ok": True, "folio": _folio_row(f), "count": len(rows),
+            "lines": rows}
+
+
+def edit_lines(app: Any, client: Any, ops: list,
+               page: str | int | None = None, file_id: int | None = None,
+               box: dict | None = None, dry_run: bool = True) -> dict:
+    """Change, add or remove wire segments on ONE folio in one pass.
+
+    ``ops`` is applied in order, each one of:
+
+    * ``{"op": "set", "line_id": n, "x1"?, "y1"?, "x2"?, "y2"?}`` - move one
+      or both ends of an existing line (unset coordinates stay);
+    * ``{"op": "add", "x1", "y1", "x2", "y2", "wire_style_id"? | "like_line_id"?}``
+      - draw a new schematic line, styled like another line or by id;
+    * ``{"op": "remove", "line_id": n}``.
+
+    Connectivity comes from geometry: a line becomes part of a wire only
+    where its ends sit on connection points or on other lines' ends, so an
+    edit can re-route a conductor to another terminal. SOLIDWORKS may merge
+    collinear segments and re-form wires on update, so line ids are not
+    stable across the batch - the result re-reads the folio's lines.
+
+    The folio is closed once (an editor copy would overwrite API edits) and
+    reopened once if it was open.
+    """
+    f = find_folio(app, client, page=page, file_id=file_id)
+    fid = _u(f.getID())
+    bx = {**GO_BOX, **(box or {})}
+    before = {ln["id"]: ln for ln in _folio_lines(app, client, fid)}
+
+    def _in_box(px, py):
+        return (bx["x_min"] - _SNAP <= px <= bx["x_max"] + _SNAP
+                and bx["y_min"] - _SNAP <= py <= bx["y_max"] + _SNAP)
+
+    plan, problems = [], []
+    for i, op in enumerate(ops):
+        kind = op.get("op")
+        if kind == "set":
+            lid = int(op["line_id"])
+            ln = before.get(lid)
+            if ln is None:
+                problems.append({"index": i, "error": f"line {lid} is not on this folio"})
+                continue
+            to = [float(op.get(k, ln[k])) for k in ("x1", "y1", "x2", "y2")]
+            plan.append({"index": i, "op": "set", "line_id": lid,
+                         "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]], "to": to})
+        elif kind == "add":
+            try:
+                to = [float(op[k]) for k in ("x1", "y1", "x2", "y2")]
+            except KeyError as exc:
+                problems.append({"index": i, "error": f"add needs {exc}"})
+                continue
+            style = op.get("wire_style_id")
+            if style is None and op.get("like_line_id") is not None:
+                like = before.get(int(op["like_line_id"]))
+                if like is None:
+                    problems.append({"index": i, "error": "like_line_id is not on this folio"})
+                    continue
+                style = _u(like["obj"].getWireStyleID())
+            plan.append({"index": i, "op": "add", "to": to, "wire_style_id": style})
+        elif kind == "remove":
+            lid = int(op["line_id"])
+            if lid not in before:
+                problems.append({"index": i, "error": f"line {lid} is not on this folio"})
+                continue
+            plan.append({"index": i, "op": "remove", "line_id": lid})
+        else:
+            problems.append({"index": i, "error": f"unknown op {kind!r}"})
+            continue
+        if kind in ("set", "add"):
+            x1, y1, x2, y2 = plan[-1]["to"]
+            if abs(x1 - x2) < _SNAP and abs(y1 - y2) < _SNAP:
+                problems.append({"index": i, "error": "zero-length line"})
+            for px, py in ((x1, y1), (x2, y2)):
+                if not _in_box(px, py):
+                    problems.append({"index": i, "error": f"({px}, {py}) is outside the drawable box"})
+    result = {"folio": _folio_row(f), "box": bx, "plan": plan}
+    if problems:
+        return {"ok": False, "dry_run": dry_run, **result, "problems": problems}
+    if dry_run:
+        return {"ok": True, "dry_run": True, **result}
+
+    was_open = bool(_u(f.isOpen()))
+    steps: dict[str, Any] = {}
+    if was_open:
+        steps["folio.close"] = _rc(f.close())
+        if steps["folio.close"] not in (0, None):
+            return {"ok": False, "dry_run": False, **result, "steps": steps,
+                    "error": "could not close the folio"}
+    lmgr = _u(_project(app).getEwProjectLineManager())
+    applied = []
+    for p in plan:
+        row = {"index": p["index"], "op": p["op"]}
+        try:
+            if p["op"] in ("set", "remove"):
+                # Re-fetch by id: handles from before the close are stale.
+                obj = _u(lmgr.findEwProjectLineByID(int(p["line_id"])))
+                if obj is None:
+                    row.update(ok=False, error="line not found (merged by an earlier op?)")
+                    applied.append(row)
+                    continue
+                if p["op"] == "remove":
+                    row["remove"] = _rc_name(_rc(obj.remove()))
+                    row["ok"] = row["remove"] == "EW_NO_ERROR"
+                else:
+                    x1, y1, x2, y2 = p["to"]
+                    _rc(obj.setStartPointXPosition(x1))
+                    _rc(obj.setStartPointYPosition(y1))
+                    _rc(obj.setEndPointXPosition(x2))
+                    _rc(obj.setEndPointYPosition(y2))
+                    row["update"] = _rc_name(_rc(obj.update()))
+                    row["ok"] = row["update"] == "EW_NO_ERROR"
+            else:
+                obj = _u(f.newEwProjectLine(0))     # 0 = kLineSchematic
+                if obj is None:
+                    row.update(ok=False, error="newEwProjectLine returned NULL")
+                    applied.append(row)
+                    continue
+                x1, y1, x2, y2 = p["to"]
+                _rc(obj.setStartPointXPosition(x1))
+                _rc(obj.setStartPointYPosition(y1))
+                _rc(obj.setEndPointXPosition(x2))
+                _rc(obj.setEndPointYPosition(y2))
+                if p.get("wire_style_id") is not None:
+                    row["setWireStyleID"] = _rc_name(_rc(obj.setWireStyleID(int(p["wire_style_id"]))))
+                row["insert"] = _rc_name(_rc(obj.insert()))
+                row["line_id"] = _u(obj.getID())
+                row["ok"] = row["insert"] == "EW_NO_ERROR"
+        except Exception as exc:  # noqa: BLE001
+            row.update(ok=False, error=f"{type(exc).__name__}: {exc}")
+        applied.append(row)
+    if was_open:
+        steps["folio.open"] = _rc(f.open())
+    after = [_line_row(ln["obj"]) for ln in _folio_lines(app, client, fid)]
+    return {"ok": all(r.get("ok") for r in applied), "dry_run": False,
+            **result, "steps": steps, "applied": applied,
+            "lines_after": after,
+            "note": "line ids can change: SOLIDWORKS merges collinear "
+                    "segments and re-forms wires on update"}

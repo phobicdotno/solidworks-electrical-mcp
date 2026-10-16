@@ -11,6 +11,26 @@ is wrong often enough that this distinction is the point.
 
 ### Added
 
+- `list_lines(page)` and `edit_lines(ops, page)`: read, move, draw and
+  remove wire segments on one page in one pass (`set` / `add` / `remove`
+  ops, drawable-box check, dry run first, folio closed once). Moving a line
+  end onto another connection point re-routes the conductor to that
+  terminal. Measured: re-routing re-forms the wire objects, and the new
+  wires lose their cable core association; no COM call can restore it
+  (wire, line, cable and cable manager all lack a setter, and the generic
+  `setProperty` names tried answer `EW_BAD_INPUTS`).
+- Last-resort GUI tools `gui_screenshot`, `gui_click`, `gui_scroll`,
+  `gui_keys`, `gui_type` (module `gui.py`) for the operations the API cannot
+  do at all: associating cable cores, editing plain drawing texts and
+  multiline texts, creating revisions. Every input first brings SOLIDWORKS
+  Electrical or one of its own dialogs to the front and refuses when another
+  application keeps the focus. Learned while building it: an ALT tap to win
+  the foreground leaves the ribbon in keytip mode and swallows the next
+  wheel or click (a SHIFT tap is used instead); pulling the main frame in
+  front of one of its open dialogs moves the keyboard focus off the dialog
+  and typed text is silently lost; `SendInput` with `KEYEVENTF_UNICODE`
+  reached nothing in SOLIDWORKS dialogs, virtual-key presses do; on a
+  drawing a negative wheel step zooms in.
 - `rebind_symbol(symbol_id, component_id)`: point a drawn symbol at another
   component. A page pasted in from another project draws its own copies of
   the devices on it, so the parts list counts them twice; rebinding the
@@ -19,6 +39,10 @@ is wrong often enough that this distinction is the point.
 
 ### Fixed
 
+- `move_symbol` / `move_symbols` dragged no wires when the page was closed
+  in the editor: `getEwProjectLineArrayFromFileID` answers NULL rather than
+  an error for a closed folio, and that was read as "no lines". It now falls
+  back to the full line scan.
 - `rename_component`, `renumber_components`, `clone_component` and
   `add_component` tested a new mark against every component in the
   project. A mark only has to be unique among siblings: SOLIDWORKS builds
