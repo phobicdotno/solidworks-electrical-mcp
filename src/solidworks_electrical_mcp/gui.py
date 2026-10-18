@@ -121,20 +121,32 @@ def _guard(title_hint: str) -> tuple[int, dict]:
 
 
 def click(x: int, y: int, button: str = "left", double: bool = False,
-          title_hint: str = TITLE_HINT) -> dict:
-    """Click at (x, y) relative to the SOLIDWORKS Electrical window."""
+          modifiers: str = "", title_hint: str = TITLE_HINT) -> dict:
+    """Click at (x, y) relative to the SOLIDWORKS Electrical window.
+
+    ``modifiers`` ("ctrl", "shift", "ctrl+shift") are held during the click.
+    A plain click on a drawing replaces the selection; ctrl+click adds to
+    it, which is how several wires are selected for one command.
+    """
     _, info = _guard(title_hint)
     sx, sy = info["rect"][0] + int(x), info["rect"][1] + int(y)
+    held = [_VK[m] for m in (modifiers or "").lower().split("+") if m]
     win32api.SetCursorPos((sx, sy))
     time.sleep(0.05)
     down, up = {"left": (win32con.MOUSEEVENTF_LEFTDOWN, win32con.MOUSEEVENTF_LEFTUP),
                 "right": (win32con.MOUSEEVENTF_RIGHTDOWN, win32con.MOUSEEVENTF_RIGHTUP)}[button]
-    for _ in range(2 if double else 1):
-        win32api.mouse_event(down, 0, 0, 0, 0)
-        win32api.mouse_event(up, 0, 0, 0, 0)
-        time.sleep(0.08)
+    for k in held:
+        win32api.keybd_event(k, 0, 0, 0)
+    try:
+        for _ in range(2 if double else 1):
+            win32api.mouse_event(down, 0, 0, 0, 0)
+            win32api.mouse_event(up, 0, 0, 0, 0)
+            time.sleep(0.08)
+    finally:
+        for k in reversed(held):
+            win32api.keybd_event(k, 0, win32con.KEYEVENTF_KEYUP, 0)
     return {"ok": True, "screen_xy": [sx, sy], "button": button,
-            "double": double}
+            "double": double, "modifiers": modifiers}
 
 
 def move(x: int, y: int, title_hint: str = TITLE_HINT) -> dict:

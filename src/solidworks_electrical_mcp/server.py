@@ -2072,10 +2072,12 @@ def gui_screenshot(path: str | None = None, whole_screen: bool = False) -> dict:
 
 @mcp.tool
 def gui_click(x: int, y: int, button: str = "left",
-              double: bool = False) -> dict:
+              double: bool = False, modifiers: str = "") -> dict:
     """LAST RESORT. Click at (x, y) in the SOLIDWORKS window (screenshot
-    pixels). button: left | right."""
-    return _gui().click(x, y, button=button, double=double)
+    pixels). button: left | right. modifiers: "ctrl" / "shift" held during
+    the click (ctrl+click adds to the drawing selection)."""
+    return _gui().click(x, y, button=button, double=double,
+                        modifiers=modifiers)
 
 
 @mcp.tool
