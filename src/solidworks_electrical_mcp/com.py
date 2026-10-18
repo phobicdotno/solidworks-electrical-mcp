@@ -469,7 +469,8 @@ class ElectricalApp:
     def _shift_folio_numbers_locked(self, threshold: int, delta: int,
                                     place_file_id: int | None,
                                     place_at: int | None, dry_run: bool,
-                                    root: str) -> dict:
+                                    root: str,
+                                    book_id: int | None = None) -> dict:
         """Cascade folio page numbers (``getTagNumber``) to insert/remove a sheet.
 
         Page marks must be unique, so dropping a folio in at page N means every
@@ -484,6 +485,11 @@ class ElectricalApp:
           (descending current number when delta>0, ascending when delta<0);
         * finally ``place_file_id`` is set to ``place_at``.
 
+        Page marks are unique per book, not per project: a project with
+        several books has a page 01 in each. The cascade therefore stays in
+        one book - ``book_id``, else the book of ``place_file_id`` - and is
+        refused when the project has more than one book and neither is given.
+
         ``dry_run=True`` returns the planned changes without touching anything.
         """
         proj = self._navigate(self._root_target(root), ["getEwProjectCurrent"])
@@ -494,18 +500,27 @@ class ElectricalApp:
         def _u(x):
             return x[0] if isinstance(x, tuple) else x
 
-        folios: list[tuple[int, int]] = []
-        max_num = 0
+        rows: list[tuple[int, int, int]] = []
         for raw in arr:
             try:
                 el = client.Dispatch(raw)
             except Exception:
                 el = raw
-            fid = _u(el.getID())
-            tn = _u(el.getTagNumber())
-            folios.append((fid, tn))
-            if tn > max_num:
-                max_num = tn
+            rows.append((_u(el.getID()), _u(el.getTagNumber()),
+                         _u(el.getEwProjectBookID())))
+        books = {b for _, _, b in rows}
+        if book_id is None and place_file_id is not None:
+            book_id = next((b for fid, _, b in rows if fid == place_file_id),
+                           None)
+        if book_id is None and len(books) > 1:
+            return {"error": f"the project has {len(books)} books and page "
+                             "numbers repeat between them; give book_id "
+                             f"(one of {sorted(books)})"}
+        if book_id is not None and book_id not in books:
+            return {"error": f"book_id {book_id} has no pages"}
+        folios = [(fid, tn) for fid, tn, b in rows
+                  if book_id is None or b == book_id]
+        max_num = max((tn for _, tn in folios), default=0)
 
         place_from = None
         if place_file_id is not None:
@@ -531,6 +546,7 @@ class ElectricalApp:
         if dry_run:
             return {"dry_run": True, "threshold": threshold, "delta": delta,
                     "shift_count": len(affected), "max_number_before": max_num,
+                    "book_id": book_id,
                     "plan": plan}
 
         temp = max_num + 1000
@@ -718,12 +734,14 @@ class ElectricalApp:
     def shift_folio_numbers(self, threshold: int, delta: int,
                             place_file_id: int | None = None,
                             place_at: int | None = None, dry_run: bool = True,
-                            root: str = "application") -> dict:
+                            root: str = "application",
+                            book_id: int | None = None) -> dict:
         """Cascade folio page numbers to insert (delta=+1) or close (delta=-1) a
         sheet, collision-safe. ``dry_run`` defaults True — preview first."""
         return self._worker.submit(
             lambda: self._shift_folio_numbers_locked(
-                threshold, delta, place_file_id, place_at, dry_run, root))
+                threshold, delta, place_file_id, place_at, dry_run, root,
+                book_id))
 
     def list_enums(self, name: str | None = None) -> dict[str, dict[str, int]]:
         """Read COM enum members from the installed type library.

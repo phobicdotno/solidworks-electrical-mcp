@@ -33,6 +33,7 @@ Cases:
   R. a repeat export to the same folder is not mistaken for a failure, and
      an export left in place is told apart from one that did nothing
   S. a pass whose process() refuses is reported as a failure, with the code
+  T. report drawings are generated one report per run
 
 Run directly:
     .venv/Scripts/python.exe tests/test_automation.py
@@ -691,6 +692,25 @@ for fn, kw in ((auto.number_wires, {"action": "new"}),
     check(named,
           f"S: and the steps must carry the named code, got {r['steps']}")
 ok("S ok: a refused pass is reported as one, with the error code", mark)
+
+mark = len(failures)
+# --- T: report drawings are generated one report per run ----------------
+# Handed two ids in one array, SOLIDWORKS drew only the first and still
+# returned 0, so the second report silently never appeared.
+app, log = world()
+r = auto.generate_report_drawings(app, CLIENT, report_ids=[11, 12],
+                                  book_or_folder_id=7)
+runs = [e for e in log if e[0] == "new ExportReport"]
+gens = [e for e in log if e[0] == "doGenerateDrawings"]
+arrays = [e for e in log if e[0] == "setEwProjectReportIDArray"]
+check(r["ok"] and len(runs) == 2 and len(gens) == 2,
+      f"T: two reports must mean two generate runs, got {log}")
+check(len(arrays) == 2 and [a[1][0][1] for a in arrays] == [(11,), (12,)],
+      f"T: each run must carry exactly one report id, got {arrays}")
+check([a for a in log if a[0] == "setBookOrFolderId"] ==
+      [("setBookOrFolderId", (7,))] * 2,
+      f"T: the target book/folder goes to every run, got {log}")
+ok("T ok: one generate run per report", mark)
 
 print()
 if failures:

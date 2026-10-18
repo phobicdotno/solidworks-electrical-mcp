@@ -559,7 +559,8 @@ def array_ops(array: str, ops: list[dict], select: dict | None = None,
 def shift_folio_numbers(threshold: int, delta: int,
                         place_file_id: int | None = None,
                         place_at: int | None = None, dry_run: bool = True,
-                        root: str = "application") -> dict:
+                        root: str = "application",
+                        book_id: int | None = None) -> dict:
     """Cascade folio page numbers (``getTagNumber``) to insert or remove a sheet.
 
     Folio page marks must be unique, so slotting a folio in at page N requires
@@ -575,6 +576,9 @@ def shift_folio_numbers(threshold: int, delta: int,
         at a temp number during the cascade so it never blocks a target, then
         set to ``place_at``.
     place_at : the final page number for ``place_file_id`` (usually == threshold).
+    book_id : the book to renumber in. Page numbers are unique per book, so
+        the cascade never leaves one book; it defaults to the book of
+        ``place_file_id`` and is refused in a multi-book project without either.
     dry_run : default True — returns the full planned ``plan`` without mutating.
         Set False to apply; the result then carries ``results`` + any ``errors``
         (ops whose ``rc`` was non-zero).
@@ -586,10 +590,10 @@ def shift_folio_numbers(threshold: int, delta: int,
     try:
         out = com_mod.app().shift_folio_numbers(
             threshold, delta, place_file_id=place_file_id, place_at=place_at,
-            dry_run=dry_run, root=root)
+            dry_run=dry_run, root=root, book_id=book_id)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return {"ok": True, **out}
+    return {"ok": "error" not in out, **out}
 
 
 @mcp.tool

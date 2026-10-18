@@ -578,19 +578,28 @@ def generate_report_drawings(app: Any, client: Any,
     if not all_reports and not report_ids:
         raise ValueError("give report_ids or all_reports=True")
     proj = _project(app)
-    op = _u(proj.newEwProjectExportReport())
-    if op is None:
-        return {"ok": False,
-                "error": "newEwProjectExportReport returned NULL"}
+    # One run per report: handed several ids at once, doGenerateDrawings
+    # returns success but only draws the first (SOLIDWORKS Electrical 2025
+    # SP5, measured 2026-10-18).
+    batches = [None] if all_reports else [[int(r)] for r in report_ids]
     steps, step = _steps()
-    step("setExportAllReports", op.setExportAllReports(bool(all_reports)))
-    if not all_reports:
-        step("setEwProjectReportIDArray",
-             op.setEwProjectReportIDArray(_id_array(report_ids or [])))
-    if book_or_folder_id is not None:
-        step("setBookOrFolderId", op.setBookOrFolderId(int(book_or_folder_id)))
-    rc = step("doGenerateDrawings", op.doGenerateDrawings())
-    return {"ok": rc in (0, None), "report_ids": report_ids or [],
+    rcs = []
+    for ids in batches:
+        op = _u(proj.newEwProjectExportReport())
+        if op is None:
+            return {"ok": False,
+                    "error": "newEwProjectExportReport returned NULL",
+                    "steps": steps}
+        step("setExportAllReports", op.setExportAllReports(bool(all_reports)))
+        if ids is not None:
+            step("setEwProjectReportIDArray",
+                 op.setEwProjectReportIDArray(_id_array(ids)))
+        if book_or_folder_id is not None:
+            step("setBookOrFolderId",
+                 op.setBookOrFolderId(int(book_or_folder_id)))
+        rcs.append(step("doGenerateDrawings", op.doGenerateDrawings()))
+    return {"ok": all(rc in (0, None) for rc in rcs),
+            "report_ids": report_ids or [],
             "all_reports": bool(all_reports), "steps": steps}
 
 

@@ -6,7 +6,9 @@ set and computes that cascade itself (no hand-built id list). This test runs it
 in ``dry_run`` mode only — it mutates NOTHING — and asserts the plan is
 internally consistent: the inserted folio is mapped to ``place_at``, every
 shifted folio moves by exactly ``delta``, and the resulting target numbers are
-unique (no two folios would collide on the same page).
+unique (no two folios would collide on the same page). Page numbers are
+unique per book, so in a project with several books the plan must stay in
+the book it is given, and a call without one is refused.
 
 SKIPs without the licensed app / an open project.
 
@@ -76,7 +78,8 @@ def main() -> int:
             "array": "getEwProjectCurrent.getEwProjectFileManager."
                      "getEwProjectFileArray",
             "ops": [{"member": "getID", "args": []},
-                    {"member": "getTagNumber", "args": []}]})
+                    {"member": "getTagNumber", "args": []},
+                    {"member": "getEwProjectBookID", "args": []}]})
         rows = files.get("rows", [])
         if not rows:
             print("SKIP: no folios")
@@ -84,13 +87,28 @@ def main() -> int:
 
         def scalar(v):
             return v[0] if isinstance(v, list) else v
-        nums = {scalar(r["results"][0]): scalar(r["results"][1]) for r in rows}
+        book_of = {scalar(r["results"][0]): scalar(r["results"][2])
+                   for r in rows}
+        books = sorted(set(book_of.values()))
+        # page numbers are unique per book: plan inside the biggest book
+        book = max(books, key=lambda b: list(book_of.values()).count(b))
+        nums = {scalar(r["results"][0]): scalar(r["results"][1]) for r in rows
+                if scalar(r["results"][2]) == book}
         # choose a threshold mid-range so some folios shift and some do not
         sorted_nums = sorted(set(nums.values()))
         threshold = sorted_nums[len(sorted_nums) // 2]
 
+        if len(books) > 1:
+            refused = tool("shift_folio_numbers", {
+                "threshold": threshold, "delta": 1, "dry_run": True})
+            if refused.get("ok") or "book" not in refused.get("error", ""):
+                print(f"FAIL: multi-book project without book_id must be "
+                      f"refused, got {refused}")
+                return 1
+
         res = tool("shift_folio_numbers", {
-            "threshold": threshold, "delta": 1, "dry_run": True})
+            "threshold": threshold, "delta": 1, "dry_run": True,
+            "book_id": book})
         if not res.get("ok"):
             print(f"FAIL: tool errored: {res}")
             return 1
@@ -103,6 +121,8 @@ def main() -> int:
         unique_ok = len(targets) == len(set(targets))
         # only folios >= threshold are in the shift set
         below = [p for p in shift_rows if p["from"] < threshold]
+        # and none from another book
+        below += [p for p in shift_rows if book_of.get(p["id"]) != book]
 
         print(f"threshold={threshold} shift_count={res.get('shift_count')} "
               f"bad_delta={len(bad)} unique_targets={unique_ok} below={len(below)}")
