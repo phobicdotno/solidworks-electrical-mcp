@@ -11,6 +11,24 @@ is wrong often enough that this distinction is the point.
 
 ### Added
 
+- `rename_cable(cable_id, new_tag, confirm_tag)`: a cable mark is rebuilt
+  from root and number on `update()`, so both are set (`W107` to `C.W1`
+  sets root `C.W` and number 1) and the mark is read back. Measured on a
+  project of 117 cables and 715 cored wires: every wire drawn as a core
+  prints the new mark without being touched, and no wire end moves. A mark
+  another cable carries is refused, so a renumbering is done in an order
+  that frees each target first.
+- `list_wires(cable_id=...)`: the cores of one cable. `mark_contains` only
+  ever searched the wire's own mark, never the cable core label next to it.
+- `delete_cable(..., allow_wired=False)`: a cable with wires on its cores is
+  refused and the wires are listed; the usual reason to delete a cable is a
+  leftover nobody draws. The result now carries `wires_cut`.
+- `archive_project(..., overwrite=False)`: measured, `archive()` answers
+  `EW_BAD_INPUTS` and writes nothing when the target file exists. An
+  existing file is now refused with that explanation, and with `overwrite`
+  the archive is written under a temporary name and moved over the old one
+  only once it exists.
+
 - `list_lines(page)` and `edit_lines(ops, page)`: read, move, draw and
   remove wire segments on one page in one pass (`set` / `add` / `remove`
   ops, drawable-box check, dry run first, folio closed once). Moving a line

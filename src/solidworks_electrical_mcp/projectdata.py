@@ -15,6 +15,7 @@ program, so it is worth being able to read and write from here.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .workflows import (LANG, _each, _need, _rc, _rc_name, _text, _u,
@@ -500,12 +501,28 @@ def update_cable(app: Any, client: Any, cable_id: int,
             "cable": _cable_row(c), "steps": steps}
 
 
+def _wires_on_cable(proj: Any, client: Any, cable_id: int) -> list[int]:
+    """Ids of the wires drawn as cores of one cable.
+
+    One getter per wire, so a project of a couple of thousand wires costs a
+    couple of thousand round trips: cheap next to deleting a cable somebody
+    still draws.
+    """
+    mgr = _u(proj.getEwProjectWireManager())
+    if mgr is None:
+        return []
+    return [_u(w.getID()) for w in _each(client, _u(mgr.getEwProjectWireArray()))
+            if _u(w.getCableID()) == int(cable_id)]
+
+
 def delete_cable(app: Any, client: Any, cable_id: int,
-                 confirm_tag: str) -> dict:
+                 confirm_tag: str, allow_wired: bool = False) -> dict:
     """Remove a cable. ``confirm_tag`` must match its tag.
 
     The cable's cores go with it, so anything drawn as one of those cores
-    loses its conductor.
+    loses its conductor. A cable with wires on its cores is refused unless
+    ``allow_wired`` is set: the usual reason to delete one is that it is a
+    leftover nobody draws, and a wired one is not that.
     """
     proj = _project(app)
     mgr = _need(_u(proj.getEwProjectCableManager()),
@@ -518,7 +535,57 @@ def delete_cable(app: Any, client: Any, cable_id: int,
         return {"ok": False, "cable": row,
                 "error": f"confirm_tag {confirm_tag!r} does not match "
                          f"{row['tag']!r}; nothing was deleted"}
+    wired = _wires_on_cable(proj, client, int(cable_id))
+    if wired and not allow_wired:
+        return {"ok": False, "cable": row, "wire_ids": wired,
+                "error": f"{len(wired)} wire(s) are drawn as cores of "
+                         f"{row['tag']}; nothing was deleted (pass "
+                         f"allow_wired to delete it anyway)"}
     rc = _rc(c.remove())
     gone = _u(mgr.findEwProjectCableByID(int(cable_id))) is None
     return {"ok": rc in (0, None) and gone, "deleted": row, "rc": rc,
-            "rc_name": _rc_name(rc), "confirmed_gone": gone}
+            "rc_name": _rc_name(rc), "confirmed_gone": gone,
+            "wires_cut": wired}
+
+
+def rename_cable(app: Any, client: Any, cable_id: int, new_tag: str,
+                 confirm_tag: str) -> dict:
+    """Give one cable a new mark, e.g. ``W107`` to ``W1``.
+
+    A cable mark is stored as a root and a number (``W`` and ``107``) and
+    rebuilt from them, so both are set and the mark is read back. The cores
+    follow: wires drawn as cores print the new mark without being touched.
+    A mark another cable already carries is refused; to swap two cables,
+    move one to a free number first.
+    """
+    m = re.match(r"^(.*?)(\d+)$", str(new_tag))
+    if not m:
+        return {"ok": False,
+                "error": f"new_tag {new_tag!r} must end in a number"}
+    root, number = m.group(1), int(m.group(2))
+    proj = _project(app)
+    mgr = _need(_u(proj.getEwProjectCableManager()),
+                "getEwProjectCableManager")
+    c = _u(mgr.findEwProjectCableByID(int(cable_id)))
+    if c is None:
+        return {"ok": False, "error": f"no cable with id {cable_id}"}
+    old = _text(c, "getTag")
+    if str(confirm_tag) != str(old):
+        return {"ok": False, "cable": _cable_row(c),
+                "error": f"confirm_tag {confirm_tag!r} does not match "
+                         f"{old!r}; nothing was renamed"}
+    for other in _each(client, _u(mgr.getEwProjectCableArray())):
+        if _u(other.getID()) != int(cable_id) and \
+                _text(other, "getTag") == str(new_tag):
+            return {"ok": False, "cable": _cable_row(c),
+                    "error": f"{new_tag!r} is already cable id "
+                             f"{_u(other.getID())}; nothing was renamed"}
+    steps = [("setTagRoot", _rc(c.setTagRoot(root))),
+             ("setTagNumber", _rc(c.setTagNumber(number))),
+             ("update", _rc(c.update()))]
+    tag = _text(c, "getTag")
+    return {"ok": all(rc in (0, None) for _, rc in steps)
+            and tag == str(new_tag),
+            "old_tag": old, "tag": tag, "cable": _cable_row(c),
+            "steps": [{"step": s, "rc": rc, "rc_name": _rc_name(rc)}
+                      for s, rc in steps]}

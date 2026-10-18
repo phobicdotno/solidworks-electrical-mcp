@@ -890,13 +890,29 @@ def update_cable(cable_id: int, description: str | None = None,
 
 
 @mcp.tool
-def delete_cable(cable_id: int, confirm_tag: str) -> dict:
+def delete_cable(cable_id: int, confirm_tag: str,
+                 allow_wired: bool = False) -> dict:
     """Remove a cable. ``confirm_tag`` must match its tag.
 
     Its cores go with it, so anything drawn as one of those cores loses its
-    conductor.
+    conductor. A cable with wires on its cores is refused (the result lists
+    them) unless ``allow_wired`` is set.
     """
-    return _run(pd.delete_cable, cable_id=cable_id, confirm_tag=confirm_tag)
+    return _run(pd.delete_cable, cable_id=cable_id, confirm_tag=confirm_tag,
+                allow_wired=allow_wired)
+
+
+@mcp.tool
+def rename_cable(cable_id: int, new_tag: str, confirm_tag: str) -> dict:
+    """Give one cable a new mark (``W107`` to ``W1``); ``confirm_tag`` is
+    its current mark.
+
+    Root and number are both set and the mark is read back. Wires drawn as
+    its cores print the new mark on their own. A mark another cable carries
+    is refused; to swap two, move one to a free number first.
+    """
+    return _run(pd.rename_cable, cable_id=cable_id, new_tag=new_tag,
+                confirm_tag=confirm_tag)
 
 
 # --------------------------------------------------------------------------
@@ -1095,17 +1111,20 @@ def generate_report_drawings(report_ids: list[int] | None = None,
 @mcp.tool
 def list_wires(mark_contains: str | None = None,
                equipotential_contains: str | None = None,
-               component_id: int | None = None, limit: int = 500) -> dict:
+               component_id: int | None = None,
+               cable_id: int | None = None, limit: int = 500) -> dict:
     """Every wire as a from-to row: both ends, component and terminal.
 
     A wire here is the logical conductor, not a line on a page. Each row
     carries mark, equipotential, signal, colour, section, length, cable, and
     both ends, which makes this a wiring list somebody can build from.
-    ``component_id`` narrows it to what lands on one device.
+    ``component_id`` narrows it to what lands on one device, ``cable_id`` to
+    the cores of one cable. ``mark_contains`` searches the wire mark only,
+    not the cable core label.
     """
     return _run(auto.list_wires, mark_contains=mark_contains,
                 equipotential_contains=equipotential_contains,
-                component_id=component_id, limit=limit)
+                component_id=component_id, cable_id=cable_id, limit=limit)
 
 
 @mcp.tool
@@ -1415,16 +1434,20 @@ def delete_project(project_id: int, confirm_name: str) -> dict:
 @mcp.tool
 def archive_project(output_path: str, project_id: int | None = None,
                     name: str | None = None,
-                    with_dependencies: bool = True) -> dict:
+                    with_dependencies: bool = True,
+                    overwrite: bool = False) -> dict:
     """Write a project out as a .tewzip archive (default: the open one).
 
     ``with_dependencies`` also packs the library content the project
     references (symbols, parts, title blocks), which is what makes the
     archive restorable on a machine with a different environment.
+    SOLIDWORKS Electrical will not archive over an existing file; with
+    ``overwrite`` the archive is written under a temporary name and moved
+    over the old one once it exists.
     """
     return _run(pj.archive_project, output_path=output_path,
                 project_id=project_id, name=name,
-                with_dependencies=with_dependencies)
+                with_dependencies=with_dependencies, overwrite=overwrite)
 
 
 @mcp.tool

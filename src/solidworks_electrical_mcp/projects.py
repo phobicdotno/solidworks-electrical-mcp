@@ -297,12 +297,19 @@ def delete_project(app: Any, client: Any, project_id: int,
 
 def archive_project(app: Any, client: Any, output_path: str,
                     project_id: int | None = None, name: str | None = None,
-                    with_dependencies: bool = True) -> dict:
+                    with_dependencies: bool = True,
+                    overwrite: bool = False) -> dict:
     """Write a project out as a .tewzip archive.
 
     With ``with_dependencies`` the archive also carries the library content
     the project references (symbols, parts, title blocks), which is what makes
     it restorable on a machine with a different environment.
+
+    ``archive`` answers EW_BAD_INPUTS and writes nothing when the target file
+    already exists. So an existing file is refused unless ``overwrite`` is
+    set, and then the archive is written next to it under a temporary name
+    and moved over it only once it exists: a failed archive never costs the
+    old one.
     """
     import pythoncom  # type: ignore
     from win32com.client import VARIANT  # type: ignore
@@ -315,13 +322,29 @@ def archive_project(app: Any, client: Any, output_path: str,
     row = _row(p)
     output_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    replacing = os.path.isfile(output_path)
+    if replacing and not overwrite:
+        return {"ok": False, "project": row, "output_path": output_path,
+                "error": "the file already exists and SOLIDWORKS Electrical "
+                         "will not archive over it; pass overwrite=True to "
+                         "replace it"}
+    target = output_path
+    if replacing:
+        stem, ext = os.path.splitext(output_path)
+        target = f"{stem}.new-{os.getpid()}{ext}"
 
     mgr = _manager(app)
     ids = VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_I4, [int(row["id"])])
-    rc = _rc(mgr.archive(ids, output_path, bool(with_dependencies)))
+    rc = _rc(mgr.archive(ids, target, bool(with_dependencies)))
+    written = rc in (0, None) and os.path.isfile(target)
+    if replacing and written:
+        os.replace(target, output_path)
+    elif replacing and os.path.isfile(target):
+        os.remove(target)
     exists = os.path.isfile(output_path)
-    return {"ok": rc in (0, None) and exists, "project": row,
+    return {"ok": written and exists, "project": row,
             "output_path": output_path, "exists": exists,
+            "replaced": replacing and written,
             "size_bytes": os.path.getsize(output_path) if exists else 0,
             "with_dependencies": bool(with_dependencies),
             "rc": rc, "rc_name": _rc_name(rc)}

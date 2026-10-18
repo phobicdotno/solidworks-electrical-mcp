@@ -119,7 +119,7 @@ reporting success.
 | `list_snapshots()` / `create_snapshot(name, ...)` / `restore_snapshot(id, confirm_name)` / `delete_snapshot(id, confirm_name)` | Project versions. Real restore points, and the only undo this server has. |
 | `list_io(...)` / `update_io(id, ...)` | The PLC I/O channels: mnemonic, key code, channel address, and the component circuit each sits on. |
 | `list_functions()` / `add_function(tag, description?)` / `delete_function(id, confirm_tag)` | Functional groups (the `=` part of a tag path). |
-| `update_cable(id, ...)` / `delete_cable(id, confirm_tag)` | The cable write side; `list_cables` is the read. |
+| `update_cable(id, ...)` / `rename_cable(id, new_tag, confirm_tag)` / `delete_cable(id, confirm_tag, allow_wired?)` | The cable write side; `list_cables` is the read. A rename sets mark root and number, and the cores print the new mark on their own. A cable with wires on its cores is not deleted unless `allow_wired` is set. |
 
 Snapshots are squeezed between two rules that contradict each other. `create`
 and `restore` return `EW_PROJECT_OPENED` while the project is open, but

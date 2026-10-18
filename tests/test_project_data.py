@@ -410,6 +410,12 @@ class FakeClient:
 CLIENT = FakeClient()
 
 
+class NoWires:
+    @staticmethod
+    def getEwProjectWireArray():
+        return ([], 0)
+
+
 def world():
     log: list = []
     snaps = [FakeSnapshot(log, 1, "before renumber",
@@ -423,6 +429,8 @@ def world():
              FakeFunction(log, 21, "NAV", "Navigation")]
     cables = [FakeCable(log, 30, "W101"), FakeCable(log, 31, "W102")]
     proj = FakeProject(log, snaps, ios, funcs, cables)
+    # No wires unless a case adds them: delete_cable asks for them.
+    proj.getEwProjectWireManager = lambda: (NoWires(), 0)
     app = FakeApp(proj)
     proj.app = app
     proj.snaps.app = app
@@ -708,6 +716,97 @@ check(order.index("closeEwProjectID") < order.index("openEwProjectID"),
 check(app.current_id == 9,
       f"O: and the project open again, got {app.current_id}")
 ok("O ok: the delete retries closed only when SOLIDWORKS asks", mark)
+
+
+# --------------------------------------------------------------------------
+# Cables with wires on their cores, and cable marks. The live rule both rest
+# on: a cable mark is rebuilt from root + number on update(), and a wire knows
+# its cable only by id, so it prints whatever the cable is called now.
+
+
+class FakeWire:
+    def __init__(self, wid, cable_id):
+        self.wid, self.cable_id = wid, cable_id
+
+    def getID(self):
+        return (self.wid, 0)
+
+    def getCableID(self):
+        return (self.cable_id, 0)
+
+
+class WireManager:
+    def __init__(self, wires):
+        self.wires = wires
+
+    def getEwProjectWireArray(self):
+        return (self.wires, 0)
+
+
+class MarkedCable(FakeCable):
+    def __init__(self, log, cid, root, number):
+        super().__init__(log, cid, f"{root}{number}")
+        self.f.update({"setTagRoot": root, "setTagNumber": number})
+
+    def update(self):
+        self.calls.append(("update", ()))
+        self.f["setTag"] = f"{self.f['setTagRoot']}{self.f['setTagNumber']}"
+        return 0
+
+
+def cable_world(wired_on=None):
+    app, log = world()
+    cables = [MarkedCable(log, 30, "W", 107), MarkedCable(log, 31, "W", 1),
+              MarkedCable(log, 32, "W", 9)]
+    app.proj.cables = ArrayManager(log, cables)
+    app.proj.cables.getEwProjectCableArray = \
+        lambda: (app.proj.cables._live(), 0)
+    wires = [FakeWire(500 + i, wired_on) for i in range(3)] if wired_on \
+        else []
+    app.proj.getEwProjectWireManager = lambda: (WireManager(wires), 0)
+    return app, log
+
+
+mark = len(failures)
+# --- P: a cable somebody still draws is not deleted by accident ----------
+app, log = cable_world(wired_on=30)
+r = pd.delete_cable(app, CLIENT, cable_id=30, confirm_tag="W107")
+check(not r["ok"] and r["wire_ids"] == [500, 501, 502],
+      f"P: a wired cable must be refused with its wires listed, got {r}")
+check(not any(c[0] == "remove" for c in log), "P: nothing may be removed")
+r = pd.delete_cable(app, CLIENT, cable_id=31, confirm_tag="W1")
+check(r["ok"] and r["wires_cut"] == [],
+      f"P: an unwired cable deletes as before, got {r}")
+r = pd.delete_cable(app, CLIENT, cable_id=30, confirm_tag="W107",
+                    allow_wired=True)
+check(r["ok"] and len(r["wires_cut"]) == 3,
+      f"P: allow_wired deletes it and reports what was cut, got {r}")
+ok("P ok: a wired cable is only deleted when asked for explicitly", mark)
+
+mark = len(failures)
+# --- Q: renaming a cable sets root and number, and refuses a taken mark ---
+app, log = cable_world()
+r = pd.rename_cable(app, CLIENT, cable_id=30, new_tag="C.W1",
+                    confirm_tag="W107")
+sent = dict((c[0], c[1]) for c in log)
+check(r["ok"] and r["tag"] == "C.W1",
+      f"Q: W107 should become C.W1, got {r}")
+check(sent.get("setTagRoot") == ("C.W",) and sent.get("setTagNumber") == (1,)
+      and isinstance(sent["setTagNumber"][0], int),
+      f"Q: root and an integer number, got {sent}")
+r = pd.rename_cable(app, CLIENT, cable_id=32, new_tag="W1",
+                    confirm_tag="W9")
+check(not r["ok"] and "already cable id 31" in r["error"],
+      f"Q: a mark another cable carries must be refused, got {r}")
+r = pd.rename_cable(app, CLIENT, cable_id=32, new_tag="W5",
+                    confirm_tag="W8")
+check(not r["ok"] and "does not match" in r["error"],
+      f"Q: the current mark must confirm, got {r}")
+r = pd.rename_cable(app, CLIENT, cable_id=32, new_tag="WX",
+                    confirm_tag="W9")
+check(not r["ok"] and "number" in r["error"],
+      f"Q: a mark without a number cannot be split, got {r}")
+ok("Q ok: rename_cable sets root and number and refuses a taken mark", mark)
 
 print()
 if failures:

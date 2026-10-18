@@ -624,6 +624,7 @@ def _wire_row(w: Any) -> dict:
 def list_wires(app: Any, client: Any, mark_contains: str | None = None,
                equipotential_contains: str | None = None,
                component_id: int | None = None,
+               cable_id: int | None = None,
                limit: int = 500) -> dict:
     """Every wire in the project as a from-to row.
 
@@ -633,7 +634,9 @@ def list_wires(app: Any, client: Any, mark_contains: str | None = None,
     actually build from rather than a list of labels.
 
     ``component_id`` narrows it to the wires landing on one device, which is
-    the usual question: what is connected to this thing.
+    the usual question: what is connected to this thing. ``cable_id`` narrows
+    it to the cores of one cable; ``mark_contains`` only searches the wire's
+    own mark, never the cable core label printed next to it.
     """
     proj = _project(app)
     mgr = _need(_u(proj.getEwProjectWireManager()),
@@ -651,6 +654,8 @@ def list_wires(app: Any, client: Any, mark_contains: str | None = None,
         if component_id is not None and component_id not in (
                 _u(w.getOriginComponentID()),
                 _u(w.getDestinationComponentID())):
+            continue
+        if cable_id is not None and _u(w.getCableID()) != int(cable_id):
             continue
         if needle and needle not in str(_text(w, "getTag") or "").lower():
             continue
