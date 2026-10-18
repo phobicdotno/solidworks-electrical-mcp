@@ -24,3 +24,4 @@ work is the test.
 | Change | Commit(s) | Staged | Confirmations | Status |
 |---|---|---|---|---|
 | `rename_cable`, `list_wires(cable_id)`, `delete_cable(allow_wired)`, `archive_project(overwrite)` | c740fdc | 2026-10-18 | 2026-10-18: live check on a 117-cable project (rename away and back, refusal of a taken mark, 4 cores listed by cable, wired cable refused, archive replaced) | on `main` before this ledger existed; confirmations still recorded |
+| `edit_lines` add op with `synoptic_style_id` (draws a line-diagram line, `newEwProjectLine(1)` + `setWireStyleSynopticID`) | this commit | 2026-10-18 | | staged, 0 confirmations. Measured: a schematic line cannot be converted (EW_BAD_INPUTS); "Add a cable" opened on one API-drawn line-diagram line, not on two others |

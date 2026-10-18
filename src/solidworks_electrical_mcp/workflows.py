@@ -3634,6 +3634,12 @@ def edit_lines(app: Any, client: Any, ops: list,
       or both ends of an existing line (unset coordinates stay);
     * ``{"op": "add", "x1", "y1", "x2", "y2", "wire_style_id"? | "like_line_id"?}``
       - draw a new schematic line, styled like another line or by id;
+    * ``{"op": "add", ..., "synoptic_style_id": n}`` - draw a line-diagram
+      (synoptic) line in that synoptic wire style instead. Measured: a
+      schematic line cannot be turned into one (``setWireStyleSynopticID``
+      answers EW_BAD_INPUTS on it), and "Add a cable" only accepts
+      line-diagram lines, so a network link drawn as a schematic line has
+      to be redrawn this way before it can carry a cable;
     * ``{"op": "remove", "line_id": n}``.
 
     Connectivity comes from geometry: a line becomes part of a wire only
@@ -3679,7 +3685,10 @@ def edit_lines(app: Any, client: Any, ops: list,
                     problems.append({"index": i, "error": "like_line_id is not on this folio"})
                     continue
                 style = _u(like["obj"].getWireStyleID())
-            plan.append({"index": i, "op": "add", "to": to, "wire_style_id": style})
+            syn = op.get("synoptic_style_id")
+            plan.append({"index": i, "op": "add", "to": to,
+                         "wire_style_id": None if syn is not None else style,
+                         "synoptic_style_id": None if syn is None else int(syn)})
         elif kind == "remove":
             lid = int(op["line_id"])
             if lid not in before:
@@ -3733,7 +3742,9 @@ def edit_lines(app: Any, client: Any, ops: list,
                     row["update"] = _rc_name(_rc(obj.update()))
                     row["ok"] = row["update"] == "EW_NO_ERROR"
             else:
-                obj = _u(f.newEwProjectLine(0))     # 0 = kLineSchematic
+                syn = p.get("synoptic_style_id")
+                # EwLineType: 0 = kLineSchematic, 1 = kLineSynoptic
+                obj = _u(f.newEwProjectLine(1 if syn is not None else 0))
                 if obj is None:
                     row.update(ok=False, error="newEwProjectLine returned NULL")
                     applied.append(row)
@@ -3743,7 +3754,9 @@ def edit_lines(app: Any, client: Any, ops: list,
                 _rc(obj.setStartPointYPosition(y1))
                 _rc(obj.setEndPointXPosition(x2))
                 _rc(obj.setEndPointYPosition(y2))
-                if p.get("wire_style_id") is not None:
+                if syn is not None:
+                    row["setWireStyleSynopticID"] = _rc_name(_rc(obj.setWireStyleSynopticID(syn)))
+                elif p.get("wire_style_id") is not None:
                     row["setWireStyleID"] = _rc_name(_rc(obj.setWireStyleID(int(p["wire_style_id"]))))
                 row["insert"] = _rc_name(_rc(obj.insert()))
                 row["line_id"] = _u(obj.getID())

@@ -2037,7 +2037,9 @@ def edit_lines(ops: list, page: str | int | None = None,
 
     ``ops``, applied in order: {"op":"set","line_id",x1?,y1?,x2?,y2?} moves
     line ends; {"op":"add",x1,y1,x2,y2,"like_line_id"|"wire_style_id"} draws
-    a schematic line; {"op":"remove","line_id"}. Moving an end onto another
+    a schematic line, with "synoptic_style_id" a line-diagram line instead
+    (the only kind "Add a cable" accepts; a schematic line cannot be
+    converted); {"op":"remove","line_id"}. Moving an end onto another
     connection point re-routes the conductor to that terminal. Ends must stay
     inside the drawable box. Preview with dry_run (default), then apply; the
     folio is closed once and reopened once, and the page's lines are re-read
