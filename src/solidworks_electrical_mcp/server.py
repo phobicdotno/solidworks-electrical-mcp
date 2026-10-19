@@ -784,11 +784,12 @@ def create_snapshot(name: str, description: str | None = None,
 
 @mcp.tool
 def restore_snapshot(snapshot_id: int, confirm_name: str) -> dict:
-    """Put the project back to a snapshot. ``confirm_name`` must match.
+    """Restore a snapshot AS A NEW PROJECT. ``confirm_name`` must match.
 
-    Everything done since is discarded - drawings, components, numbering.
-    Typing the name back is what stops a stale id rolling a project back by
-    weeks.
+    SOLIDWORKS never rolls the open project back: the snapshot comes back as
+    a new project named after it, and the result gives its id
+    (``new_projects``). Open that one to work on the old state; rename the
+    two if the old name should move over. The open project is unchanged.
     """
     return _run(pd.restore_snapshot, snapshot_id=snapshot_id,
                 confirm_name=confirm_name)

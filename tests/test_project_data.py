@@ -11,7 +11,8 @@ Cases:
   A. snapshots come back newest first
   B. creating one closes the project, names it, takes it, and reopens
   C. restore refuses a confirmation that does not match the snapshot
-  D. restore goes through when it does match
+  D. restore goes through when it does match, leaves the open project
+     alone and reports the new project it made
   E. delete carries the same guard
   F. a missing snapshot id reports rather than raising
   G. I/O rows carry the channel address, and the filters work
@@ -35,6 +36,12 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
 from solidworks_electrical_mcp import projectdata as pd
+from solidworks_electrical_mcp import projects as projects_mod
+
+# restore_snapshot finds the project it made by listing the environment;
+# the fake app keeps that list as (id, name) pairs.
+projects_mod.list_projects = lambda app, client, **kw: {
+    "projects": [{"id": i, "name": n} for i, n in app.projects]}
 
 failures: list[str] = []
 
@@ -115,9 +122,12 @@ class FakeSnapshot(Base):
         return 0
 
     def restore(self):
+        # Measured 2026-10-19: restore returns 0 open or closed, leaves the
+        # project alone and adds a new one named after the snapshot.
         self.calls.append(("restore", ()))
-        if self.app is not None and self.app.current_id is not None:
-            return 45
+        if self.app is not None:
+            self.app.projects.append((100 + len(self.app.projects),
+                                      self.f["setName"]))
         return 0
 
 
@@ -304,6 +314,7 @@ class FakeApp:
     def __init__(self, proj, project_id=9):
         self.proj, self.project_id = proj, project_id
         self.current_id = project_id
+        self.projects = [(project_id, "the project")]
 
     def getEwProjectCurrent(self):
         return ((self.proj, 0) if self.current_id is not None
@@ -366,6 +377,7 @@ class FakeApp:
     def __init__(self, proj, project_id=9):
         self.proj, self.project_id = proj, project_id
         self.current_id = project_id
+        self.projects = [(project_id, "the project")]
 
     def getEwProjectCurrent(self):
         return ((self.proj, 0) if self.current_id is not None
@@ -491,19 +503,20 @@ check(not any(c[0] == "restore" for c in log),
 ok("C ok: a mismatched confirmation restores nothing", mark)
 
 mark = len(failures)
-# --- D: the matching name goes through -----------------------------------
+# --- D: the matching name goes through, as a new project -----------------
 app, log = world()
 r = pd.restore_snapshot(app, CLIENT, snapshot_id=1,
                         confirm_name="before renumber")
 order = [c[0] for c in log]
 check(r["ok"] and "restore" in order,
       f"D: the right name should restore, got {r}")
-check(order.index("closeEwProjectID") < order.index("restore")
-      < order.index("openEwProjectID"),
-      f"D: close, restore, reopen, order={order}")
+check("closeEwProjectID" not in order,
+      f"D: the open project must not be closed, order={order}")
+check(r.get("new_projects") == [{"id": 101, "name": "before renumber"}],
+      f"D: the new project must be reported, got {r.get('new_projects')}")
 check(app.current_id == 9,
-      f"D: the project must be open again, got {app.current_id}")
-ok("D ok: the matching name restores, between a close and a reopen", mark)
+      f"D: the open project stays current, got {app.current_id}")
+ok("D ok: the matching name restores as a new project and reports it", mark)
 
 mark = len(failures)
 # --- E: delete carries the same guard ------------------------------------

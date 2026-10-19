@@ -155,19 +155,18 @@ def create_snapshot(app: Any, client: Any, name: str,
 
 def restore_snapshot(app: Any, client: Any, snapshot_id: int,
                      confirm_name: str) -> dict:
-    """Put the project back to a snapshot. ``confirm_name`` must match.
+    """Restore a snapshot AS A NEW PROJECT. ``confirm_name`` must match.
 
-    Everything done since that snapshot is discarded - drawings, components,
-    numbering, the lot. The name has to be typed back because an id read from
-    a stale listing would otherwise roll a project back by weeks.
-
-    Like ``create_snapshot``, the snapshot is resolved while the project is
-    open and restored while it is closed, and the project is open again when
-    this returns.
+    SOLIDWORKS never rolls the project itself back: ``restore`` returns 0
+    and adds a new project to the environment, named after the snapshot,
+    holding the project as it was (measured 2026-10-19, open or closed; the
+    GUI offers the same thing as "Restore as new project" in Snapshot
+    management). The open project is left alone, so nothing is closed here.
+    The new project's id is found by comparing the environment's project
+    ids before and after, and is returned so the caller can open it.
     """
-    # Resolve and check the name BEFORE closing anything: a refusal should
-    # cost nothing, and closing a project only to decline is just a way to
-    # lose the session's place.
+    from .projects import list_projects
+
     proj = _project(app)
     mgr = _u(proj.getEwProjectSnapshotManager())
     if mgr is None:
@@ -182,12 +181,20 @@ def restore_snapshot(app: Any, client: Any, snapshot_id: int,
                 "error": f"confirm_name {confirm_name!r} does not match "
                          f"{row['name']!r}; nothing was restored"}
 
-    steps: list[dict] = []
-    with _Closed(app, steps):
-        rc = _rc(snap.restore())
-        steps.append({"step": "restore", "rc": rc, "rc_name": _rc_name(rc)})
-    return {"ok": rc in (0, None), "restored": row, "rc": rc,
-            "rc_name": _rc_name(rc), "steps": steps}
+    before = {r["id"] for r in
+              list_projects(app, client, project_type=None)["projects"]}
+    rc = _rc(snap.restore())
+    after = list_projects(app, client, project_type=None)["projects"]
+    new = [r for r in after if r["id"] not in before]
+    result = {"ok": rc in (0, None) and bool(new), "restored": row,
+              "rc": rc, "rc_name": _rc_name(rc),
+              "new_projects": [{"id": r["id"], "name": r["name"]}
+                               for r in new],
+              "note": "the snapshot came back as a new project; the open "
+                      "project is unchanged. Open the new one to use it."}
+    if rc in (0, None) and not new:
+        result["error"] = "restore returned 0 but no new project appeared"
+    return result
 
 
 def delete_snapshot(app: Any, client: Any, snapshot_id: int,

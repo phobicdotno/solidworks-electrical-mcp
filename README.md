@@ -116,7 +116,7 @@ reporting success.
 
 | Tool | Purpose |
 |---|---|
-| `list_snapshots()` / `create_snapshot(name, ...)` / `restore_snapshot(id, confirm_name)` / `delete_snapshot(id, confirm_name)` | Project versions. Real restore points, and the only undo this server has. |
+| `list_snapshots()` / `create_snapshot(name, ...)` / `restore_snapshot(id, confirm_name)` / `delete_snapshot(id, confirm_name)` | Project versions. Real restore points, and the only undo this server has. A restore never rolls the open project back: it adds a new project named after the snapshot and returns its id. |
 | `list_io(...)` / `update_io(id, ...)` | The PLC I/O channels: mnemonic, key code, channel address, and the component circuit each sits on. |
 | `list_functions()` / `add_function(tag, description?)` / `delete_function(id, confirm_tag)` | Functional groups (the `=` part of a tag path). |
 | `update_cable(id, ...)` / `rename_cable(id, new_tag, confirm_tag)` / `delete_cable(id, confirm_tag, allow_wired?)` | The cable write side; `list_cables` is the read. A rename sets mark root and number, and the cores print the new mark on their own. A cable with wires on its cores is not deleted unless `allow_wired` is set. |
@@ -124,7 +124,7 @@ reporting success.
 | `move_folio(file_id, book_id?, folder_id?, position?)` / `move_folder(folder_id, book_id)` / `add_book(tag, description)` / `set_book_order(book_ids)` | Split a project into books (each prints its own PDF, cover page and reports). The typed setters refuse to move an inserted page; these write the database fields, and a folder takes its sub-folders and pages along. |
 
 Snapshots are squeezed between two rules that contradict each other. `create`
-and `restore` return `EW_PROJECT_OPENED` while the project is open, but
+returns `EW_PROJECT_OPENED` while the project is open, but
 `getEwProjectSnapshotManager` returns NULL while it is closed - so the obvious
 reading, close it and then do the work, dies on a NULL manager. The one order
 that works is to take the manager and build the snapshot object while the
@@ -132,6 +132,9 @@ project is open, close, `create`, and reopen; those pointers survive the
 close. The reopen lives in the context manager's exit so it runs even when
 the block raises, because every other tool acts on "the open project" and
 leaving it closed would strand the session rather than merely fail.
+`restore` needs none of this: it returns 0 either way and adds a new project
+named after the snapshot (the GUI's "Restore as new project"), leaving the
+open one as it was.
 
 Closing is cheap and reopening is not. `closeEwProjectID` on the 181-folio
 production project returns in 0.1 s. Opening it again after that is the
