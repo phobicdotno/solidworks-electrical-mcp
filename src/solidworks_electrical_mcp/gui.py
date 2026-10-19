@@ -26,6 +26,7 @@ from typing import Any
 import win32api
 import win32con
 import win32gui
+import win32process
 from PIL import ImageGrab
 
 TITLE_HINT = "SOLIDWORKS Electrical"
@@ -107,6 +108,10 @@ def screenshot(path: str | None = None, title_hint: str = TITLE_HINT,
     return {"ok": True, "path": path, "size": list(img.size),
             "origin": [0, 0] if whole_screen else info["rect"][:2],
             "window": info}
+
+
+def _pid(hwnd: int) -> int:
+    return win32process.GetWindowThreadProcessId(hwnd)[1]
 
 
 def _guard(title_hint: str) -> tuple[int, dict]:
@@ -205,11 +210,21 @@ def keys(combo: str, title_hint: str = TITLE_HINT) -> dict:
 
 def type_text(text: str, title_hint: str = TITLE_HINT) -> dict:
     """Type text into the focused SOLIDWORKS control (Unicode-safe)."""
-    _guard(title_hint)
+    hwnd, _ = _guard(title_hint)
+    pid = _pid(hwnd)
     # Virtual-key presses, not SendInput/KEYEVENTF_UNICODE: the Unicode route
     # reached nothing in SOLIDWORKS dialogs (2026-10-16, Associate cable
     # cores filter box stayed empty).
-    for ch in text:
+    for i, ch in enumerate(text):
+        # The check before typing is not enough: the owner switched windows
+        # half-way through a 96-character string and only "Cleanup" reached
+        # SOLIDWORKS (2026-10-19). Stop the moment focus leaves its process.
+        fg = win32gui.GetForegroundWindow()
+        if _pid(fg) != pid:
+            raise RuntimeError(
+                f"focus left SOLIDWORKS Electrical after {i} of {len(text)} "
+                f"characters (foreground: {win32gui.GetWindowText(fg)!r}); "
+                "stopped typing")
         vk = win32api.VkKeyScan(ch)
         if vk == -1:
             raise ValueError(f"cannot type {ch!r} on this keyboard layout")
