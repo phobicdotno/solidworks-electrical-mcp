@@ -60,6 +60,7 @@ from . import com as com_mod
 from . import library as lib
 from . import projectdata as pd
 from . import projects as pj
+from . import rawfields as rf
 from . import settings as st
 from . import workflows as wf
 
@@ -891,6 +892,90 @@ def update_cable(cable_id: int, description: str | None = None,
                 upstream_location_id=upstream_location_id,
                 downstream_location_id=downstream_location_id,
                 function_id=function_id)
+
+
+@mcp.tool
+def list_template_columns(prefix: str | None = None) -> dict:
+    """Database column names the installed report templates select, by
+    prefix (fil page, bun book, fol folder, com component, cab cable, wir
+    wire, loc location, fun function ...). These are the names
+    getProperty/setProperty take; probe_object_fields shows which ones a
+    given object really has."""
+    try:
+        cols = rf.template_columns()
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if prefix:
+        cols = {k: v for k, v in cols.items() if k == prefix}
+    return {"ok": True, "kinds": {k: v[0] for k, v in rf.KINDS.items()},
+            "columns": cols}
+
+
+@mcp.tool
+def probe_object_fields(kind: str, obj_id: int) -> dict:
+    """Every database field one object answers to, with its value.
+
+    kind: file (page), book, folder, component, cable, wire, location,
+    function, harness, line, manufacturer_part, io. Reaches fields no typed
+    getter has (a page's book and folder, a book's order, user data)."""
+    return _run(rf.probe_fields, kind=kind, obj_id=obj_id)
+
+
+@mcp.tool
+def get_object_fields(kind: str, obj_id: int, names: list[str]) -> dict:
+    """Read named database fields of one object (see probe_object_fields)."""
+    return _run(rf.get_fields, kind=kind, obj_id=obj_id, names=names)
+
+
+@mcp.tool
+def set_object_fields(kind: str, obj_id: int, values: dict,
+                      dry_run: bool = True) -> dict:
+    """Write database fields of one object with setProperty, then update and
+    read back. Writes past the typed setters (which refuse e.g. moving an
+    inserted page), so preview with dry_run first; a name the object does not
+    answer to is refused. Prefer move_folio / set_book_order where they fit."""
+    return _run(rf.set_fields, kind=kind, obj_id=obj_id, values=values,
+                dry_run=dry_run)
+
+
+@mcp.tool
+def move_folio(file_id: int, book_id: int | None = None,
+               folder_id: int | None = None, position: int | None = None,
+               dry_run: bool = True) -> dict:
+    """Move a page to another book and/or folder (folder_id=-1: top level of
+    its book), or to another position in the tree. The API setters refuse
+    this on an inserted page; this writes fil_bun_id / fil_fol_id /
+    fil_tagposition. Page numbers are unique per book: check the number is
+    free in the target book (shift_folio_numbers with book_id)."""
+    return _run(rf.move_folio, file_id=file_id, book_id=book_id,
+                folder_id=folder_id, position=position, dry_run=dry_run)
+
+
+@mcp.tool
+def add_book(tag: str, description: str, dry_run: bool = True) -> dict:
+    """Create a book (e.g. an add-on with its own PDF, cover page and
+    reports) and place it after the existing books. Move pages or folders in
+    with move_folio / set_object_fields(kind="folder", values={"fol_bun_id":
+    ...})."""
+    return _run(rf.add_book, tag=tag, description=description,
+                dry_run=dry_run)
+
+
+@mcp.tool
+def move_folder(folder_id: int, book_id: int, dry_run: bool = True) -> dict:
+    """Move a folder, its sub-folders and all their pages to another book
+    (e.g. an add-on chapter into its own book). Page numbers are unique per
+    book, so check the target book has no page with the same numbers."""
+    return _run(rf.move_folder, folder_id=folder_id, book_id=book_id,
+                dry_run=dry_run)
+
+
+@mcp.tool
+def set_book_order(book_ids: list[int], dry_run: bool = True) -> dict:
+    """Order the books in the tree and the PDF export, first id first. A new
+    book is created with position -1 and sorts before book 1 until this is
+    set."""
+    return _run(rf.set_book_order, book_ids=book_ids, dry_run=dry_run)
 
 
 @mcp.tool

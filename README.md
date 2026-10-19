@@ -120,6 +120,8 @@ reporting success.
 | `list_io(...)` / `update_io(id, ...)` | The PLC I/O channels: mnemonic, key code, channel address, and the component circuit each sits on. |
 | `list_functions()` / `add_function(tag, description?)` / `delete_function(id, confirm_tag)` | Functional groups (the `=` part of a tag path). |
 | `update_cable(id, ...)` / `rename_cable(id, new_tag, confirm_tag)` / `delete_cable(id, confirm_tag, allow_wired?)` | The cable write side; `list_cables` is the read. A rename sets mark root and number, and the cores print the new mark on their own. A cable with wires on its cores is not deleted unless `allow_wired` is set. |
+| `list_template_columns` / `probe_object_fields(kind, id)` / `get_object_fields` / `set_object_fields(kind, id, values, dry_run)` | Raw database fields of pages, books, folders, components, cables, wires and more, through the undocumented `getProperty`/`setProperty`. The names are the database columns; the installed report templates list them, and the probe shows which ones an object really has. Reaches what no typed setter does (a page's book and folder, a book's order, user data). Unknown names are refused; writes are read back. |
+| `move_folio(file_id, book_id?, folder_id?, position?)` / `move_folder(folder_id, book_id)` / `add_book(tag, description)` / `set_book_order(book_ids)` | Split a project into books (each prints its own PDF, cover page and reports). The typed setters refuse to move an inserted page; these write the database fields, and a folder takes its sub-folders and pages along. |
 
 Snapshots are squeezed between two rules that contradict each other. `create`
 and `restore` return `EW_PROJECT_OPENED` while the project is open, but
