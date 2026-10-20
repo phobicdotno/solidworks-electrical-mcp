@@ -1189,23 +1189,34 @@ def export_reports(output_dir: str, report_ids: list[int] | None = None,
 def generate_report_drawings(report_ids: list[int] | None = None,
                              all_reports: bool = False,
                              book_or_folder_id: int | None = None,
-                             keep_position: bool = False) -> dict:
+                             keep_position: bool = False,
+                             wait_for_settle: bool = True,
+                             settle_timeout: float = 120.0) -> dict:
     """Render reports as folios in the project rather than to a file.
 
     This puts the bill of materials or the wire list into the document tree
     as printable pages, so the drawing set carries its own tables.
 
-    Regenerating a report that already has folios DELETES them and draws
-    new ones (new file ids) at the END of their folder, after the other
-    reports there, while the page marks stay as they were: the BOM read
-    72-86 but sat after the cable list 87-90, and a full PDF export printed
-    the cable list first (2026-10-20). ``keep_position`` records the old
-    folios' tree positions and gives them to the new ones; without it, put
-    them back with ``move_folio(file_id, position=...)`` before exporting.
+    SOLIDWORKS returns from the generate call BEFORE it is done with the
+    tree: for about a minute the folio list carries dozens of blank folios
+    named after the report (no filter suffix, an empty page) at the end of
+    the book's top level, and only then are the report's own folios moved
+    to the book's top level (folder -1) or replaced by new ids at the end
+    of their folder, after the other reports there, with the page marks
+    unchanged (2025 SP5, 2026-10-18 and 10-20). Deleting those blanks while
+    they are there is wrong: they go by themselves. ``wait_for_settle``
+    (default on) polls the folio list every few seconds until two listings
+    in a row agree, at most ``settle_timeout`` seconds, reported under
+    ``settle``; only then is the tree read. ``keep_position`` then puts the
+    report's folios back in their old folder and positions; without it, use
+    ``move_folio(file_id, folder_id=..., position=...)`` before exporting.
+    A few blank folios can outlive the settle: list_folios(file_type="bom")
+    with an empty description suffix finds them, delete_folio removes them.
     """
     return _run(auto.generate_report_drawings, report_ids=report_ids,
                 all_reports=all_reports, book_or_folder_id=book_or_folder_id,
-                keep_position=keep_position)
+                keep_position=keep_position, wait_for_settle=wait_for_settle,
+                settle_timeout=settle_timeout)
 
 
 @mcp.tool

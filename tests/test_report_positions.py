@@ -200,6 +200,10 @@ def _id_array(ids):
 
 
 auto._id_array = _id_array
+# The fake draws synchronously, so the settle wait sees the same tree twice
+# and must not spend wall-clock time on it (tests/test_report_settle.py
+# covers the wait itself).
+auto._SLEEP = lambda s: None
 
 mark = len(failures)
 # --- A: default: end of the folder, with the note ------------------------

@@ -19,6 +19,7 @@ Every one of them is a bulk edit with no undo, so they share a shape:
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 from .workflows import (_each, _need, _rc, _rc_name, _text, _u,
@@ -569,74 +570,193 @@ def _folio_slots(app: Any, client: Any) -> dict[int, dict]:
     return {r["id"]: r for r in list_folios(app, client)["folios"]}
 
 
+# Patched by the tests so a settle wait takes no wall-clock time.
+_SLEEP = time.sleep
+_CLOCK = time.monotonic
+
+SETTLE_INTERVAL = 3.0
+SETTLE_TIMEOUT = 120.0
+
+
+def _slot_signature(slots: dict[int, dict]) -> dict:
+    return {i: (r["book_id"], r["folder_id"], r["position"], r["page"],
+                r["description"]) for i, r in slots.items()}
+
+
+def _wait_for_settle(app: Any, client: Any, interval: float = SETTLE_INTERVAL,
+                     timeout: float = SETTLE_TIMEOUT) -> tuple[dict, dict]:
+    """Poll the folio list until two consecutive listings agree.
+
+    ``doGenerateDrawings`` returns while SOLIDWORKS is still at work on the
+    tree. Measured 2026-10-20 (2025 SP5, a 3-book project): right after the
+    call the folio list carried 48 blank folios named after the report with
+    no filter suffix (an empty page, 3.7 KB when exported) at the end of
+    book 1's top level, and the report's own folios still had their ids
+    and folder; about a minute later all but the last three blanks were
+    gone and the report's folios had been moved to the book's top level
+    (folder -1), after the cable list. Anything read or moved inside that
+    window is read or moved on a tree SOLIDWORKS is still rewriting, so
+    this waits for it to stop. Returns the settled listing and a report
+    (``settled``, ``polls``, ``seconds``, ``transient_ids``: folios seen in
+    an earlier poll but not in the last one).
+    """
+    start = _CLOCK()
+    slots = _folio_slots(app, client)
+    seen: set[int] = set(slots)
+    polls, settled = 1, False
+    while True:
+        if _CLOCK() - start >= timeout:
+            break
+        _SLEEP(interval)
+        nxt = _folio_slots(app, client)
+        polls += 1
+        seen |= set(nxt)
+        same = _slot_signature(nxt) == _slot_signature(slots)
+        slots = nxt
+        if same:
+            settled = True
+            break
+    info = {"settled": settled, "polls": polls,
+            "seconds": round(_CLOCK() - start, 1),
+            "interval": interval, "timeout": timeout,
+            "transient_ids": sorted(seen - set(slots))}
+    if not settled:
+        info["error"] = (f"the folio list was still changing after "
+                         f"{timeout:g} s; SOLIDWORKS may still be drawing "
+                         f"the report, run list_folios again before "
+                         f"touching the tree")
+    return slots, info
+
+
 def _restore_positions(app: Any, client: Any, before: dict[int, dict],
                        after: dict[int, dict]) -> dict:
-    """Put regenerated report folios back where the old ones sat.
+    """Put a report's folios back where they sat before the regeneration.
 
-    A regeneration deletes the report's folios and draws new ones (new ids)
-    at the END of their folder, after whatever else is there, while the page
-    marks stay what they were. The tree and the PDF then run cable list
-    before bill of materials although the pages read 72-86 and 87-90
-    (measured 2026-10-20). The old positions are the fix: the new folios of
-    each (book, folder) take them in order; when the report grew, the pages
-    that followed move up by the difference.
+    Two things have been measured on 2025 SP5 (2026-10-20):
+
+    * a regeneration deletes the report's folios and draws new ones (new
+      ids) at the END of their folder, while the page marks stay what they
+      were, so the tree and the PDF run cable list before bill of materials
+      although the pages read 72-86 and 87-90;
+    * a regeneration keeps the ids and MOVES the folios out of their folder
+      to the book's top level (folder -1), after the cable list, once the
+      tree has settled.
+
+    The old slots are the fix in both cases. Every folio that survived goes
+    back to its old (book, folder, position); the new folios of a replaced
+    group take the old ones' folder and positions in order (matched by the
+    folder they landed in, else by description, else as the only group);
+    when the report grew, the pages that followed move up by the
+    difference. A new folio that matches nothing is left alone and listed
+    in ``unmatched_new``: the blank folios SOLIDWORKS leaves behind look
+    like that.
     """
     from . import rawfields as rf
     gone = [r for i, r in before.items() if i not in after]
     new = [r for i, r in after.items() if i not in before]
     key = lambda r: (r["book_id"], r["folder_id"])  # noqa: E731
     pos = lambda r: r["position"] if isinstance(r["position"], int) else 0  # noqa: E731
-    moves: list[dict] = []
-    unmatched: list[int] = []
-    for grp in sorted({key(r) for r in new}, key=str):
+    slot = lambda r: (r["book_id"], r["folder_id"], pos(r))  # noqa: E731
+
+    # Target slot of every folio that is on the tree now.
+    target: dict[int, tuple] = {i: slot(before[i]) for i in after if i in before}
+
+    # Replacement groups: the gone folios by their old (book, folder).
+    groups = []
+    for grp in sorted({key(r) for r in gone}, key=str):
         olds = sorted((r for r in gone if key(r) == grp), key=pos)
-        news = sorted((r for r in new if key(r) == grp), key=pos)
-        if not olds:
-            unmatched += [r["id"] for r in news]
+        groups.append({"key": grp, "olds": olds, "news": [],
+                       "descs": {str(r["description"]) for r in olds}})
+    all_descs = set().union(*(g["descs"] for g in groups)) if groups else set()
+    by_desc = any(str(r["description"]) in all_descs for r in new)
+    unmatched: list[int] = []
+    for r in sorted(new, key=pos):
+        if by_desc:
+            cands = [g for g in groups if str(r["description"]) in g["descs"]]
+            if len(cands) > 1:
+                cands = [g for g in cands if g["key"] == key(r)] or cands[:1]
+        else:
+            cands = [g for g in groups if g["key"] == key(r)]
+            if not cands and len(groups) == 1:
+                cands = groups
+        if not cands:
+            unmatched.append(r["id"])
             continue
+        cands[0]["news"].append(r)
+
+    for g in groups:
+        olds, news = g["olds"], g["news"]
+        if not news:
+            continue
+        book, folder = g["key"]
         first, last = pos(olds[0]), pos(olds[-1])
         for i, r in enumerate(news):
-            moves.append({"file_id": r["id"], "page": r["page"],
-                          "from": pos(r), "to": first + i})
+            target[r["id"]] = (book, folder, first + i)
         delta = len(news) - len(olds)
         if delta > 0:
-            new_ids = {r["id"] for r in news}
-            for r in after.values():
-                if r["book_id"] == grp[0] and r["id"] not in new_ids \
-                        and pos(r) > last:
-                    moves.append({"file_id": r["id"], "page": r["page"],
-                                  "from": pos(r), "to": pos(r) + delta})
+            for i, old in before.items():
+                if i in target and i in after and old["book_id"] == book \
+                        and pos(old) > last:
+                    b, f, p = target[i]
+                    target[i] = (b, f, p + delta)
+
+    moves: list[dict] = []
+    for i, (book, folder, p) in target.items():
+        cur = after[i]
+        values: dict[str, int] = {}
+        if cur["folder_id"] != folder:
+            values["fil_fol_id"] = int(folder)
+        if cur["book_id"] != book:
+            values["fil_bun_id"] = int(book)
+        if pos(cur) != p:
+            values["fil_tagposition"] = int(p)
+        if not values:
+            continue
+        moves.append({"file_id": i, "page": cur["page"],
+                      "from": pos(cur), "to": p,
+                      "folder_from": cur["folder_id"], "folder_to": folder,
+                      "values": values})
     results = []
     for m in moves:
-        if m["from"] == m["to"]:
-            continue
         res = rf.set_fields(app, client, "file", m["file_id"],
-                            {"fil_tagposition": m["to"]}, dry_run=False)
+                            m.pop("values"), dry_run=False)
         results.append({**m, "ok": bool(res.get("ok")),
                         "error": res.get("error")})
-    return {"folios_replaced": [r["id"] for r in gone],
-            "folios_new": [r["id"] for r in new],
-            "repositioned": results, "unmatched_new": unmatched,
-            "ok": all(r["ok"] for r in results)}
+    out = {"folios_replaced": [r["id"] for r in gone],
+           "folios_new": [r["id"] for r in new],
+           "repositioned": results, "unmatched_new": unmatched,
+           "ok": all(r["ok"] for r in results)}
+    if unmatched:
+        out["note"] = ("new folios that match no replaced one were left "
+                       "where they are; SOLIDWORKS leaves blank folios "
+                       "named after the report behind a regeneration "
+                       "(check_page_ink, then delete_folio)")
+    return out
 
 
 def generate_report_drawings(app: Any, client: Any,
                              report_ids: list[int] | None = None,
                              all_reports: bool = False,
                              book_or_folder_id: int | None = None,
-                             keep_position: bool = False) -> dict:
+                             keep_position: bool = False,
+                             wait_for_settle: bool = True,
+                             settle_timeout: float = SETTLE_TIMEOUT) -> dict:
     """Render the reports as folios inside the project instead of to a file.
 
     This is what puts the bill of materials or the wire list into the
     document tree as printable pages, so the drawing set carries its own
     tables rather than pointing at a spreadsheet somebody has to find.
 
-    Regenerating a report that already has folios deletes them and draws new
-    ones (new ids) at the end of their folder, after the other reports there,
-    with the old page marks. ``keep_position`` records where the old folios
-    sat and gives the new ones those tree positions (see
-    ``_restore_positions``); without it, ``move_folio(position=...)`` puts
-    them back by hand.
+    ``doGenerateDrawings`` returns before SOLIDWORKS is done with the tree:
+    for about a minute the folio list carries dozens of blank folios named
+    after the report, and the report's own folios are moved (or replaced,
+    see ``_restore_positions``) only at the end of that. ``wait_for_settle``
+    polls the folio list every few seconds until two consecutive listings
+    agree (``settle_timeout`` seconds at most, the wait is reported under
+    ``settle``), and only then reads the tree for ``keep_position`` and
+    returns. ``keep_position`` records where the report's folios sat and
+    puts the regenerated ones back there, folder and position; without it,
+    ``move_folio`` puts them back by hand.
     """
     if not all_reports and not report_ids:
         raise ValueError("give report_ids or all_reports=True")
@@ -648,6 +768,7 @@ def generate_report_drawings(app: Any, client: Any,
     steps, step = _steps()
     rcs = []
     restored: list[dict] = []
+    settles: list[dict] = []
     for ids in batches:
         op = _u(proj.newEwProjectExportReport())
         if op is None:
@@ -664,19 +785,40 @@ def generate_report_drawings(app: Any, client: Any,
         before = _folio_slots(app, client) if keep_position else {}
         rc = step("doGenerateDrawings", op.doGenerateDrawings())
         rcs.append(rc)
-        if keep_position and rc in (0, None):
-            restored.append(_restore_positions(app, client, before,
-                                               _folio_slots(app, client)))
-    ok = all(rc in (0, None) for rc in rcs) and all(r["ok"] for r in restored)
+        if rc not in (0, None):
+            continue
+        if wait_for_settle:
+            after, info = _wait_for_settle(app, client,
+                                           timeout=float(settle_timeout))
+            settles.append(info)
+        else:
+            after = _folio_slots(app, client) if keep_position else {}
+        if keep_position:
+            restored.append(_restore_positions(app, client, before, after))
+    ok = (all(rc in (0, None) for rc in rcs)
+          and all(r["ok"] for r in restored)
+          and all(s["settled"] for s in settles))
     out = {"ok": ok, "report_ids": report_ids or [],
            "all_reports": bool(all_reports), "steps": steps}
+    if wait_for_settle:
+        out["settle"] = settles
+        if not all(s["settled"] for s in settles):
+            out["error"] = next(s["error"] for s in settles
+                                if not s["settled"])
+    else:
+        out["warning"] = ("returned without waiting: SOLIDWORKS keeps "
+                          "rewriting the tree for about a minute after "
+                          "doGenerateDrawings (blank folios named after "
+                          "the report appear and go); list_folios again "
+                          "before moving or deleting anything")
     if keep_position:
         out["positions"] = restored
     else:
         out["note"] = ("regenerated report folios land at the end of their "
-                       "folder with new ids; pass keep_position=True, or "
-                       "move_folio(position=...), to restore the tree order "
-                       "before a PDF export")
+                       "folder with new ids, or are moved to the book's top "
+                       "level; pass keep_position=True, or "
+                       "move_folio(folder_id=..., position=...), to restore "
+                       "the tree order before a PDF export")
     return out
 
 

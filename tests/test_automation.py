@@ -697,9 +697,11 @@ mark = len(failures)
 # --- T: report drawings are generated one report per run ----------------
 # Handed two ids in one array, SOLIDWORKS drew only the first and still
 # returned 0, so the second report silently never appeared.
+# This fake has no file manager; the settle wait and the position restore
+# are covered by tests/test_report_settle.py and test_report_positions.py.
 app, log = world()
 r = auto.generate_report_drawings(app, CLIENT, report_ids=[11, 12],
-                                  book_or_folder_id=7)
+                                  book_or_folder_id=7, wait_for_settle=False)
 runs = [e for e in log if e[0] == "new ExportReport"]
 gens = [e for e in log if e[0] == "doGenerateDrawings"]
 arrays = [e for e in log if e[0] == "setEwProjectReportIDArray"]
@@ -710,6 +712,8 @@ check(len(arrays) == 2 and [a[1][0][1] for a in arrays] == [(11,), (12,)],
 check([a for a in log if a[0] == "setBookOrFolderId"] ==
       [("setBookOrFolderId", (7,))] * 2,
       f"T: the target book/folder goes to every run, got {log}")
+check("warning" in r and "settle" not in r,
+      f"T: skipping the settle wait is said out loud, got {r}")
 ok("T ok: one generate run per report", mark)
 
 print()
