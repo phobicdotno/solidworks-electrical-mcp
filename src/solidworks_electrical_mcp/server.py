@@ -2181,6 +2181,15 @@ def edit_lines(ops: list, page: str | int | None = None,
     inside the drawable box. Preview with dry_run (default), then apply; the
     folio is closed once and reopened once, and the page's lines are re-read
     afterwards because SOLIDWORKS can merge segments and change line ids.
+
+    On a LINE-DIAGRAM folio (file type 1) every line is a synoptic line:
+    "like_line_id" copies the other line's style id into synoptic_style_id
+    (as wire_style_id it makes newEwProjectLine return NULL), a bare
+    "wire_style_id" is refused, and a "set" does not take: the setters and
+    update answer EW_NO_ERROR and the end stays put (2025 SP5, 2026-10-20).
+    Every set is checked against the read-back: an end that did not move is
+    reported as applied:false with a not_applied row, and the result's ok is
+    false. On a line diagram remove the line and add a new one instead.
     """
     return _run(wf.edit_lines, ops=ops, page=page, file_id=file_id, box=box,
                 dry_run=dry_run)

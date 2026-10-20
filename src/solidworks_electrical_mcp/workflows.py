@@ -3739,6 +3739,13 @@ def list_lines(app: Any, client: Any, page: str | int | None = None,
             "lines": rows}
 
 
+LINE_DIAGRAM_SET_NOTE = (
+    "a line end on a line-diagram folio does not move through the API: the "
+    "position setters and update() answer EW_NO_ERROR and the line keeps "
+    "its coordinates (measured 2026-10-20, 2025 SP5); remove the line and "
+    "add a new one with synoptic_style_id or like_line_id instead")
+
+
 def edit_lines(app: Any, client: Any, ops: list,
                page: str | int | None = None, file_id: int | None = None,
                box: dict | None = None, dry_run: bool = True) -> dict:
@@ -3758,6 +3765,18 @@ def edit_lines(app: Any, client: Any, ops: list,
       to be redrawn this way before it can carry a cable;
     * ``{"op": "remove", "line_id": n}``.
 
+    On a line-diagram folio (file type 1) every line is a synoptic line:
+    ``like_line_id`` copies the other line's style id into the synoptic
+    style (measured 2026-10-20: the line's ``getWireStyleID`` answered 838
+    and ``synoptic_style_id=838`` drew it; the same id as ``wire_style_id``
+    made ``newEwProjectLine`` return NULL), and a bare ``wire_style_id`` is
+    refused with a message naming ``synoptic_style_id``. A ``set`` on a
+    line-diagram folio is planned but, measured the same day, the end does
+    not move: the four setters and ``update`` all answer EW_NO_ERROR and the
+    read-back keeps the old coordinates. The result says so
+    (``applied: false`` and a ``not_applied`` row per end that stayed);
+    remove the line and add a new one instead.
+
     Connectivity comes from geometry: a line becomes part of a wire only
     where its ends sit on connection points or on other lines' ends, so an
     edit can re-route a conductor to another terminal. SOLIDWORKS may merge
@@ -3769,6 +3788,8 @@ def edit_lines(app: Any, client: Any, ops: list,
     """
     f = find_folio(app, client, page=page, file_id=file_id)
     fid = _u(f.getID())
+    folio = _folio_row(f)
+    line_diagram = folio.get("file_type_code") == 1      # kFileLineDiagram
     bx = {**GO_BOX, **(box or {})}
     before = {ln["id"]: ln for ln in _folio_lines(app, client, fid)}
 
@@ -3776,7 +3797,7 @@ def edit_lines(app: Any, client: Any, ops: list,
         return (bx["x_min"] - _SNAP <= px <= bx["x_max"] + _SNAP
                 and bx["y_min"] - _SNAP <= py <= bx["y_max"] + _SNAP)
 
-    plan, problems = [], []
+    plan, problems, warnings = [], [], []
     for i, op in enumerate(ops):
         kind = op.get("op")
         if kind == "set":
@@ -3788,6 +3809,8 @@ def edit_lines(app: Any, client: Any, ops: list,
             to = [float(op.get(k, ln[k])) for k in ("x1", "y1", "x2", "y2")]
             plan.append({"index": i, "op": "set", "line_id": lid,
                          "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]], "to": to})
+            if line_diagram:
+                warnings.append({"index": i, "warning": LINE_DIAGRAM_SET_NOTE})
         elif kind == "add":
             try:
                 to = [float(op[k]) for k in ("x1", "y1", "x2", "y2")]
@@ -3795,13 +3818,30 @@ def edit_lines(app: Any, client: Any, ops: list,
                 problems.append({"index": i, "error": f"add needs {exc}"})
                 continue
             style = op.get("wire_style_id")
+            syn = op.get("synoptic_style_id")
             if style is None and op.get("like_line_id") is not None:
                 like = before.get(int(op["like_line_id"]))
                 if like is None:
                     problems.append({"index": i, "error": "like_line_id is not on this folio"})
                     continue
-                style = _u(like["obj"].getWireStyleID())
-            syn = op.get("synoptic_style_id")
+                copied = _u(like["obj"].getWireStyleID())
+                if line_diagram and syn is None:
+                    # The style id a line-diagram line reports IS its
+                    # synoptic style; handed to setWireStyleID on a new
+                    # schematic line, SOLIDWORKS answers NULL.
+                    syn = copied
+                else:
+                    style = copied
+            if line_diagram and syn is None:
+                problems.append({
+                    "index": i,
+                    "error": "this is a line-diagram folio (file type 1): a "
+                             "line here is a synoptic line, so give "
+                             "synoptic_style_id (list_wire_styles, or the "
+                             "wire_style_id of a line on this page) or "
+                             "like_line_id; wire_style_id alone makes "
+                             "newEwProjectLine return NULL"})
+                continue
             plan.append({"index": i, "op": "add", "to": to,
                          "wire_style_id": None if syn is not None else style,
                          "synoptic_style_id": None if syn is None else int(syn)})
@@ -3821,7 +3861,9 @@ def edit_lines(app: Any, client: Any, ops: list,
             for px, py in ((x1, y1), (x2, y2)):
                 if not _in_box(px, py):
                     problems.append({"index": i, "error": f"({px}, {py}) is outside the drawable box"})
-    result = {"folio": _folio_row(f), "box": bx, "plan": plan}
+    result = {"folio": folio, "box": bx, "plan": plan}
+    if warnings:
+        result["warnings"] = warnings
     if problems:
         return {"ok": False, "dry_run": dry_run, **result, "problems": problems}
     if dry_run:
@@ -3883,8 +3925,54 @@ def edit_lines(app: Any, client: Any, ops: list,
     if was_open:
         steps["folio.open"] = _rc(f.open())
     after = [_line_row(ln["obj"]) for ln in _folio_lines(app, client, fid)]
-    return {"ok": all(r.get("ok") for r in applied), "dry_run": False,
-            **result, "steps": steps, "applied": applied,
-            "lines_after": after,
-            "note": "line ids can change: SOLIDWORKS merges collinear "
-                    "segments and re-forms wires on update"}
+    # A "set" that every setter and update() accepted can still leave the
+    # line where it was (line-diagram folios, measured 2026-10-20), so the
+    # read-back is the verdict, not the return codes.
+    not_applied = _unmoved_ends(plan, applied, after)
+    for row in applied:
+        if row["op"] == "set" and row.get("ok"):
+            misses = [m for m in not_applied if m["index"] == row["index"]]
+            if misses:
+                row["ok"] = False
+                row["applied"] = False
+                row["error"] = ("update answered EW_NO_ERROR but the "
+                                "read-back kept the old coordinates")
+            else:
+                row["applied"] = True
+    out = {"ok": all(r.get("ok") for r in applied), "dry_run": False,
+           **result, "steps": steps, "applied": applied,
+           "lines_after": after,
+           "note": "line ids can change: SOLIDWORKS merges collinear "
+                   "segments and re-forms wires on update"}
+    if not_applied:
+        out["not_applied"] = not_applied
+        if line_diagram:
+            out["note"] = LINE_DIAGRAM_SET_NOTE
+    return out
+
+
+def _unmoved_ends(plan: list, applied: list, after: list) -> list:
+    """Compare every applied ``set`` with the lines read back.
+
+    One row per end that is not where it was asked to be, or for a line
+    that is no longer on the folio at all (merged, or re-formed with a new
+    id, which the caller must judge from ``lines_after``)."""
+    rows = []
+    by_id = {ln["line_id"]: ln for ln in after}
+    done = {r["index"] for r in applied if r["op"] == "set" and r.get("ok")}
+    for p in plan:
+        if p["op"] != "set" or p["index"] not in done:
+            continue
+        ln = by_id.get(p["line_id"])
+        if ln is None:
+            rows.append({"index": p["index"], "line_id": p["line_id"],
+                         "end": None, "requested": p["to"], "read_back": None,
+                         "reason": "line id not on the folio after the edit"})
+            continue
+        got = [ln["x1"], ln["y1"], ln["x2"], ln["y2"]]
+        for end, sl in (("start", slice(0, 2)), ("end", slice(2, 4))):
+            want, have = p["to"][sl], got[sl]
+            if any(abs(w - h) > _SNAP for w, h in zip(want, have)):
+                rows.append({"index": p["index"], "line_id": p["line_id"],
+                             "end": end, "requested": want, "read_back": have})
+    return rows
