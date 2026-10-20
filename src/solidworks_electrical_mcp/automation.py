@@ -22,7 +22,7 @@ import os
 from typing import Any
 
 from .workflows import (_each, _need, _rc, _rc_name, _text, _u,
-                        find_folio, _folio_row, _project)
+                        find_folio, _folio_row, _project, list_folios)
 
 # EwNumberWireAction.
 WIRE_ACTIONS = {"new": 0, "new_and_recalculate": 1, "renumber": 2,
@@ -565,15 +565,78 @@ def export_reports(app: Any, client: Any, output_dir: str,
     return out
 
 
+def _folio_slots(app: Any, client: Any) -> dict[int, dict]:
+    return {r["id"]: r for r in list_folios(app, client)["folios"]}
+
+
+def _restore_positions(app: Any, client: Any, before: dict[int, dict],
+                       after: dict[int, dict]) -> dict:
+    """Put regenerated report folios back where the old ones sat.
+
+    A regeneration deletes the report's folios and draws new ones (new ids)
+    at the END of their folder, after whatever else is there, while the page
+    marks stay what they were. The tree and the PDF then run cable list
+    before bill of materials although the pages read 72-86 and 87-90
+    (measured 2026-10-20). The old positions are the fix: the new folios of
+    each (book, folder) take them in order; when the report grew, the pages
+    that followed move up by the difference.
+    """
+    from . import rawfields as rf
+    gone = [r for i, r in before.items() if i not in after]
+    new = [r for i, r in after.items() if i not in before]
+    key = lambda r: (r["book_id"], r["folder_id"])  # noqa: E731
+    pos = lambda r: r["position"] if isinstance(r["position"], int) else 0  # noqa: E731
+    moves: list[dict] = []
+    unmatched: list[int] = []
+    for grp in sorted({key(r) for r in new}, key=str):
+        olds = sorted((r for r in gone if key(r) == grp), key=pos)
+        news = sorted((r for r in new if key(r) == grp), key=pos)
+        if not olds:
+            unmatched += [r["id"] for r in news]
+            continue
+        first, last = pos(olds[0]), pos(olds[-1])
+        for i, r in enumerate(news):
+            moves.append({"file_id": r["id"], "page": r["page"],
+                          "from": pos(r), "to": first + i})
+        delta = len(news) - len(olds)
+        if delta > 0:
+            new_ids = {r["id"] for r in news}
+            for r in after.values():
+                if r["book_id"] == grp[0] and r["id"] not in new_ids \
+                        and pos(r) > last:
+                    moves.append({"file_id": r["id"], "page": r["page"],
+                                  "from": pos(r), "to": pos(r) + delta})
+    results = []
+    for m in moves:
+        if m["from"] == m["to"]:
+            continue
+        res = rf.set_fields(app, client, "file", m["file_id"],
+                            {"fil_tagposition": m["to"]}, dry_run=False)
+        results.append({**m, "ok": bool(res.get("ok")),
+                        "error": res.get("error")})
+    return {"folios_replaced": [r["id"] for r in gone],
+            "folios_new": [r["id"] for r in new],
+            "repositioned": results, "unmatched_new": unmatched,
+            "ok": all(r["ok"] for r in results)}
+
+
 def generate_report_drawings(app: Any, client: Any,
                              report_ids: list[int] | None = None,
                              all_reports: bool = False,
-                             book_or_folder_id: int | None = None) -> dict:
+                             book_or_folder_id: int | None = None,
+                             keep_position: bool = False) -> dict:
     """Render the reports as folios inside the project instead of to a file.
 
     This is what puts the bill of materials or the wire list into the
     document tree as printable pages, so the drawing set carries its own
     tables rather than pointing at a spreadsheet somebody has to find.
+
+    Regenerating a report that already has folios deletes them and draws new
+    ones (new ids) at the end of their folder, after the other reports there,
+    with the old page marks. ``keep_position`` records where the old folios
+    sat and gives the new ones those tree positions (see
+    ``_restore_positions``); without it, ``move_folio(position=...)`` puts
+    them back by hand.
     """
     if not all_reports and not report_ids:
         raise ValueError("give report_ids or all_reports=True")
@@ -584,6 +647,7 @@ def generate_report_drawings(app: Any, client: Any,
     batches = [None] if all_reports else [[int(r)] for r in report_ids]
     steps, step = _steps()
     rcs = []
+    restored: list[dict] = []
     for ids in batches:
         op = _u(proj.newEwProjectExportReport())
         if op is None:
@@ -597,10 +661,23 @@ def generate_report_drawings(app: Any, client: Any,
         if book_or_folder_id is not None:
             step("setBookOrFolderId",
                  op.setBookOrFolderId(int(book_or_folder_id)))
-        rcs.append(step("doGenerateDrawings", op.doGenerateDrawings()))
-    return {"ok": all(rc in (0, None) for rc in rcs),
-            "report_ids": report_ids or [],
-            "all_reports": bool(all_reports), "steps": steps}
+        before = _folio_slots(app, client) if keep_position else {}
+        rc = step("doGenerateDrawings", op.doGenerateDrawings())
+        rcs.append(rc)
+        if keep_position and rc in (0, None):
+            restored.append(_restore_positions(app, client, before,
+                                               _folio_slots(app, client)))
+    ok = all(rc in (0, None) for rc in rcs) and all(r["ok"] for r in restored)
+    out = {"ok": ok, "report_ids": report_ids or [],
+           "all_reports": bool(all_reports), "steps": steps}
+    if keep_position:
+        out["positions"] = restored
+    else:
+        out["note"] = ("regenerated report folios land at the end of their "
+                       "folder with new ids; pass keep_position=True, or "
+                       "move_folio(position=...), to restore the tree order "
+                       "before a PDF export")
+    return out
 
 
 # --------------------------------------------------------------------------

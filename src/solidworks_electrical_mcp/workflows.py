@@ -202,8 +202,17 @@ def list_folios(app: Any, client: Any, book_id: int | None = None,
 
 
 def find_folio(app: Any, client: Any, page: str | int | None = None,
-               file_id: int | None = None) -> Any:
-    """Return the ``IEwProjectFileX`` for a page mark ("61") or file id."""
+               file_id: int | None = None,
+               book_id: int | None = None) -> Any:
+    """Return the ``IEwProjectFileX`` for a page mark ("61") or file id.
+
+    Page marks are unique per book, not per project: a three-book project
+    has a page "14" in every book. ``book_id`` narrows a page-mark lookup
+    to one book; without it an ambiguous mark is refused with the folio and
+    book ids, so the caller can pick one. An ``int`` page that matches no
+    page mark is tried as a folio id, so ``pages=[30604]`` works where the
+    tool has no ``file_ids`` parameter of its own.
+    """
     proj = _project(app)
     mgr = _u(proj.getEwProjectFileManager())
     if file_id is not None:
@@ -216,6 +225,8 @@ def find_folio(app: Any, client: Any, page: str | int | None = None,
     want = str(page).strip()
     exact, loose = [], []
     for f in _each(client, _u(mgr.getEwProjectFileArray())):
+        if book_id is not None and _u(f.getEwProjectBookID()) != int(book_id):
+            continue
         tag = str(_u(f.getTag()))
         if tag == want:
             exact.append(f)
@@ -223,11 +234,18 @@ def find_folio(app: Any, client: Any, page: str | int | None = None,
             loose.append(f)
     hits = exact or loose
     if not hits:
-        raise LookupError(f"no folio with page mark {want!r}")
+        if isinstance(page, int) and not isinstance(page, bool):
+            f = _u(mgr.findEwProjectFileByID(int(page)))
+            if f is not None:
+                return f
+        where = f" in book {book_id}" if book_id is not None else ""
+        raise LookupError(f"no folio with page mark {want!r}{where}")
     if len(hits) > 1:
         ids = [_u(f.getID()) for f in hits]
+        books = {_u(f.getID()): _u(f.getEwProjectBookID()) for f in hits}
         raise LookupError(
-            f"page mark {want!r} is ambiguous (folio ids {ids}); use file_id")
+            f"page mark {want!r} is ambiguous (folio ids {ids}, in books "
+            f"{books}); pass file_id, or book_id with the page")
     return hits[0]
 
 
@@ -986,13 +1004,24 @@ def clone_component(app: Any, client: Any, source_tag: str, new_tag: str,
 def delete_component(app: Any, client: Any, component_id: int | None = None,
                      tag: str | None = None,
                      pages: list[str | int] | None = None,
+                     file_ids: list[int] | None = None,
+                     book_id: int | None = None,
                      close_gap: bool = False) -> dict:
     """Remove a component by id or tag.
 
     A plain remove is tried first. If SOLIDWORKS answers EW_CANNOT_REMOVE
     (35) the component still has symbols bound to it: those are removed
-    from ``pages`` if given (fast), otherwise from every folio (a full sweep,
-    minutes on a large project), and the remove is retried.
+    from ``pages`` / ``file_ids`` if given (fast), otherwise from every
+    folio (a full sweep, minutes on a large project), and the remove is
+    retried. ``book_id`` says which book the page marks belong to; in a
+    multi-book project a bare mark like "14" exists once per book.
+
+    SOLIDWORKS Electrical deletes a component together with its last
+    symbol (measured 2025 SP5, 2026-10-20: after ``remove_symbols`` took the
+    last footprint, ``findEwProjectComponentByID`` answered NULL). So when
+    the sweep here removed the symbols and the retried remove finds no
+    component left, that is the job done, reported with a note, not an
+    error.
 
     ``close_gap`` pulls the rest of the rail back over the hole: everything
     right of each removed symbol moves left by one device pitch. It is the
@@ -1000,11 +1029,14 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
     would otherwise leave the row one device wider than it started.
     """
     proj = _project(app)
+    mgr = _u(proj.getEwProjectComponentManager())
     if component_id is not None:
-        mgr = _u(proj.getEwProjectComponentManager())
         comp = _u(mgr.findEwProjectComponentByID(int(component_id)))
         if comp is None:
-            raise LookupError(f"no component with id {component_id}")
+            raise LookupError(
+                f"no component with id {component_id}. If its symbols were "
+                f"just removed, SOLIDWORKS Electrical deleted the component "
+                f"with the last one; find_component confirms it is gone")
     elif tag:
         comp = _find_one_component(app, client, tag)
     else:
@@ -1014,13 +1046,18 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
     symbols_removed: list[dict] = []
     gaps_closed: list[dict] = []
     swept_all = False
+    gone_with_last_symbol = False
+    note = None
     rc = _rc(comp.remove())
     if rc == 35:
         # Symbols bound to the component block the remove. Manufacturer
         # parts go with the component, symbols do not.
         sym_mgr = _u(proj.getEwProjectSymbolManager())
-        if pages:
-            folios = [find_folio(app, client, page=p) for p in pages]
+        if pages or file_ids:
+            folios = [find_folio(app, client, file_id=fid)
+                      for fid in (file_ids or [])]
+            folios += [find_folio(app, client, page=p, book_id=book_id)
+                       for p in (pages or [])]
         else:
             file_mgr = _u(proj.getEwProjectFileManager())
             folios = list(_each(client, _u(file_mgr.getEwProjectFileArray())))
@@ -1085,11 +1122,20 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
             if was_open:
                 f.open()
         rc = _rc(comp.remove())
+        took_symbols = any(not r.get("skipped") for r in symbols_removed)
+        if rc not in (0, None) and took_symbols \
+                and _u(mgr.findEwProjectComponentByID(int(cid))) is None:
+            gone_with_last_symbol = True
+            note = ("the retried remove answered " + _rc_name(rc) +
+                    " because SOLIDWORKS Electrical had already deleted the "
+                    "component with its last symbol; it is gone")
     skipped = [r for r in symbols_removed if r.get("skipped")]
-    return {"ok": rc in (0, None), "removed": row, "rc": rc,
-            "rc_name": _rc_name(rc), "symbols_removed": symbols_removed,
+    return {"ok": rc in (0, None) or gone_with_last_symbol, "removed": row,
+            "rc": rc, "rc_name": _rc_name(rc),
+            "symbols_removed": symbols_removed,
             "symbols_skipped": skipped, "gaps_closed": gaps_closed,
-            "swept_all_folios": swept_all}
+            "swept_all_folios": swept_all,
+            "gone_with_last_symbol": gone_with_last_symbol, "note": note}
 
 
 # --------------------------------------------------------------------------
@@ -2952,8 +2998,53 @@ def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
             "undo": f"remove symbol {_u(sym.getID())}"}
 
 
+def _symbol_owner(sym: Any) -> int | None:
+    """The component id a symbol is bound to, or None for a label symbol
+    (whose object id is a location, cable, wire or harness) and for a double
+    without the getters."""
+    stype = _opt_id(sym, "getEwSymbolType")
+    if stype in NON_COMPONENT_SYMBOL_TYPES:
+        return None
+    oid = _opt_id(sym, "getObjectID")
+    return oid if isinstance(oid, int) and oid > 0 else None
+
+
+def _component_manager(proj: Any) -> Any:
+    get = getattr(proj, "getEwProjectComponentManager", None)
+    return _u(get()) if get is not None else None
+
+
+def _owner_tag(proj: Any, cid: int) -> Any:
+    mgr = _component_manager(proj)
+    comp = None if mgr is None else _u(mgr.findEwProjectComponentByID(int(cid)))
+    return None if comp is None else _text(comp, "getTag")
+
+
+def _components_gone(proj: Any, owners: dict[int, Any]) -> list[dict]:
+    """Which of the components in ``owners`` (id -> tag, read before the
+    symbols went) no longer exist. SOLIDWORKS Electrical deletes a component
+    together with its last symbol (measured 2025 SP5, 2026-10-20), so a
+    symbol removal can take the device with it."""
+    mgr = _component_manager(proj)
+    if mgr is None:
+        return []
+    return [{"component_id": cid, "tag": tag} for cid, tag in owners.items()
+            if _u(mgr.findEwProjectComponentByID(int(cid))) is None]
+
+
+def _gone_note(gone: list[dict]) -> str:
+    tags = ", ".join(str(g["tag"] or g["component_id"]) for g in gone)
+    return (f"component(s) {tags} lost their last symbol and SOLIDWORKS "
+            f"Electrical deleted them with it; delete_component is not "
+            f"needed and would report them missing")
+
+
 def remove_symbol(app: Any, client: Any, symbol_id: int) -> dict:
-    """Delete one drawn symbol, closing the folio first if the GUI has it."""
+    """Delete one drawn symbol, closing the folio first if the GUI has it.
+
+    Removing a component's last symbol deletes the component too (see
+    ``_components_gone``); the result lists any component that went.
+    """
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
     sym = _u(smgr.getProjectSymbolByID(int(symbol_id)))
@@ -2976,15 +3067,22 @@ def remove_symbol(app: Any, client: Any, symbol_id: int) -> dict:
                    for p in pts):
                 dangling.append({"line_id": ln["id"], "end": tag,
                                  "x": lx, "y": ly})
+    owner = _symbol_owner(sym)
+    owners = {} if owner is None else {owner: _owner_tag(proj, owner)}
     steps["remove"] = _rc(sym.remove())
     if was_open:
         steps["folio.open"] = _rc(f.open())
+    gone = _components_gone(proj, owners)
+    notes = []
+    if dangling:
+        notes.append(f"{len(dangling)} wire end(s) now hang on nothing where "
+                     "this symbol was; remove or redraw them")
+    if gone:
+        notes.append(_gone_note(gone))
     return {"ok": steps["remove"] in (0, None), "symbol_id": symbol_id,
             "file_id": fid, "steps": steps,
-            "dangling_line_ends": dangling,
-            "note": (None if not dangling else
-                     f"{len(dangling)} wire end(s) now hang on nothing where "
-                     "this symbol was; remove or redraw them")}
+            "dangling_line_ends": dangling, "components_removed": gone,
+            "note": "; ".join(notes) or None}
 
 
 def add_text(app: Any, client: Any, text: str, x: float, y: float,
@@ -3363,7 +3461,9 @@ def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
 
     Give either ``symbol_ids``, or ``all_on_page=True`` with a page, which
     clears every symbol on that folio. Lines left hanging where a symbol was
-    are reported, not removed.
+    are reported, not removed. A component whose last symbol goes here is
+    deleted by SOLIDWORKS Electrical with it; ``components_removed`` lists
+    those, so nobody calls ``delete_component`` on a device that is gone.
     """
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
@@ -3395,6 +3495,7 @@ def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
                              "stale editor copy"}
     lines = _folio_lines(app, client, fid)
     results, dangling = [], []
+    owners: dict[int, Any] = {}
     try:
         for sid in ids:
             sym = _u(smgr.getProjectSymbolByID(int(sid)))
@@ -3415,6 +3516,9 @@ def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
                            for q in pts):
                         dangling.append({"line_id": ln["id"], "end": end,
                                          "x": lx, "y": ly, "symbol_id": sid})
+            owner = _symbol_owner(sym)
+            if owner is not None and owner not in owners:
+                owners[owner] = _owner_tag(proj, owner)
             rc = _rc(sym.remove())
             results.append({"symbol_id": sid, "ok": rc in (0, None), "rc": rc})
     finally:
@@ -3423,13 +3527,16 @@ def remove_symbols(app: Any, client: Any, symbol_ids: list[int] | None = None,
 
     gone = [r for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
+    comps_gone = _components_gone(proj, owners)
+    note = "the folio was closed once and reopened once for the whole batch"
+    if dangling:
+        note += f"; {len(dangling)} wire end(s) now hang on nothing"
+    if comps_gone:
+        note += "; " + _gone_note(comps_gone)
     return {"ok": not failed, "file_id": fid, "requested": len(ids),
             "removed": len(gone), "failed": len(failed), "results": results,
             "steps": steps, "dangling_line_ends": dangling,
-            "note": ("the folio was closed once and reopened once for the "
-                     "whole batch"
-                     + ("" if not dangling else
-                        f"; {len(dangling)} wire end(s) now hang on nothing"))}
+            "components_removed": comps_gone, "note": note}
 
 
 def add_texts(app: Any, client: Any, texts: list[dict],

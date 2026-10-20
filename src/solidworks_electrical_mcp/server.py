@@ -1188,14 +1188,24 @@ def export_reports(output_dir: str, report_ids: list[int] | None = None,
 @mcp.tool
 def generate_report_drawings(report_ids: list[int] | None = None,
                              all_reports: bool = False,
-                             book_or_folder_id: int | None = None) -> dict:
+                             book_or_folder_id: int | None = None,
+                             keep_position: bool = False) -> dict:
     """Render reports as folios in the project rather than to a file.
 
     This puts the bill of materials or the wire list into the document tree
     as printable pages, so the drawing set carries its own tables.
+
+    Regenerating a report that already has folios DELETES them and draws
+    new ones (new file ids) at the END of their folder, after the other
+    reports there, while the page marks stay as they were: the BOM read
+    72-86 but sat after the cable list 87-90, and a full PDF export printed
+    the cable list first (2026-10-20). ``keep_position`` records the old
+    folios' tree positions and gives them to the new ones; without it, put
+    them back with ``move_folio(file_id, position=...)`` before exporting.
     """
     return _run(auto.generate_report_drawings, report_ids=report_ids,
-                all_reports=all_reports, book_or_folder_id=book_or_folder_id)
+                all_reports=all_reports, book_or_folder_id=book_or_folder_id,
+                keep_position=keep_position)
 
 
 @mcp.tool
@@ -1525,7 +1535,8 @@ def delete_project(project_id: int, confirm_name: str) -> dict:
 def archive_project(output_path: str, project_id: int | None = None,
                     name: str | None = None,
                     with_dependencies: bool = True,
-                    overwrite: bool = False) -> dict:
+                    overwrite: bool = False,
+                    close_open_folios: bool = False) -> dict:
     """Write a project out as a .tewzip archive (default: the open one).
 
     ``with_dependencies`` also packs the library content the project
@@ -1534,10 +1545,18 @@ def archive_project(output_path: str, project_id: int | None = None,
     SOLIDWORKS Electrical will not archive over an existing file; with
     ``overwrite`` the archive is written under a temporary name and moved
     over the old one once it exists.
+
+    ``archive`` can answer EW_NO_ERROR and write NOTHING (seen four times
+    on 2026-10-20 with a drawing open and unsaved in the editor). Trust
+    ``written`` / ``exists``, never ``rc``; when no file was written,
+    ``reason`` says what was observed and ``open_folios`` lists the folios
+    the editor had open. ``close_open_folios`` closes those first (the
+    editor saves its copy on close) and reopens them after.
     """
     return _run(pj.archive_project, output_path=output_path,
                 project_id=project_id, name=name,
-                with_dependencies=with_dependencies, overwrite=overwrite)
+                with_dependencies=with_dependencies, overwrite=overwrite,
+                close_open_folios=close_open_folios)
 
 
 @mcp.tool
@@ -1604,11 +1623,16 @@ def list_folios(book_id: int | None = None, folder_id: int | None = None,
 
 @mcp.tool
 def find_folio(page: str | int | None = None,
-               file_id: int | None = None) -> dict:
-    """Resolve one folio by page mark (e.g. "61" or "07") or by file id."""
+               file_id: int | None = None,
+               book_id: int | None = None) -> dict:
+    """Resolve one folio by page mark (e.g. "61" or "07") or by file id.
+
+    Page marks repeat across books (every book has a "01"), so in a
+    multi-book project give ``book_id`` with the page, or ``file_id``; an
+    ambiguous mark is refused with the folio and book ids to choose from."""
     def _go(app, client):
         return wf._folio_row(wf.find_folio(app, client, page=page,
-                                           file_id=file_id))
+                                           file_id=file_id, book_id=book_id))
     return _run(_go)
 
 
@@ -1723,15 +1747,28 @@ def clone_component(source_tag: str, new_tag: str,
 def delete_component(component_id: int | None = None,
                      tag: str | None = None,
                      pages: list[str | int] | None = None,
+                     file_ids: list[int] | None = None,
+                     book_id: int | None = None,
                      close_gap: bool = False) -> dict:
     """Remove a component by id or by unambiguous tag. If symbols block the
-    remove they are deleted first: from ``pages`` when given (fast), else
-    from every folio (slow on a large project).
+    remove they are deleted first: from ``pages`` / ``file_ids`` when given
+    (fast), else from every folio (slow on a large project). In a
+    multi-book project a page mark like "14" exists once per book: pass
+    ``file_ids`` (folio ids from list_folios), or ``book_id`` with
+    ``pages``.
+
+    SOLIDWORKS Electrical deletes a component together with its last
+    symbol. After ``remove_symbols`` took a device's last footprint the
+    device is already gone and this answers "no component with id"; that is
+    not a failure, find_component confirms it. When the sweep here removes
+    the last symbol itself, the result says so (``gone_with_last_symbol``)
+    and counts as success.
 
     ``close_gap`` pulls the rest of the rail back over the hole, which is the
     undo for an ``add_component(..., shift_following=True)`` insert."""
     return _run(wf.delete_component, component_id=component_id, tag=tag,
-                pages=pages, close_gap=close_gap)
+                pages=pages, file_ids=file_ids, book_id=book_id,
+                close_gap=close_gap)
 
 
 @mcp.tool
@@ -2007,6 +2044,11 @@ def remove_symbols(symbol_ids: list[int] | None = None,
     with a page to clear the whole folio. Open and close per TASK, not per
     unit: per-symbol churn of the editor tab can take SOLIDWORKS Electrical
     down.
+
+    A component whose LAST symbol goes here is deleted by SOLIDWORKS
+    Electrical with it (measured 2025 SP5): ``components_removed`` lists
+    them, and a delete_component on one of them afterwards answers "no
+    component with id" because it is already gone.
     """
     return _run(wf.remove_symbols, symbol_ids=symbol_ids, page=page,
                 file_id=file_id, all_on_page=all_on_page)
@@ -2092,7 +2134,10 @@ def place_symbol(tag: str, symbol_name: str, x: float, y: float,
 
 @mcp.tool
 def remove_symbol(symbol_id: int) -> dict:
-    """Delete one drawn symbol, closing the folio first if the GUI has it."""
+    """Delete one drawn symbol, closing the folio first if the GUI has it.
+    If it was the component's last symbol, SOLIDWORKS Electrical deletes
+    the component with it: ``components_removed`` says so, and
+    delete_component is then neither needed nor possible."""
     return _run(wf.remove_symbol, symbol_id=symbol_id)
 
 

@@ -17,7 +17,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .workflows import (LANG, _each, _rc, _rc_name, _text, _u)
+from .workflows import (LANG, _each, _rc, _rc_name, _text, _u, find_folio,
+                        list_folios)
 
 # EwProjectType (get_enum('EwProjectType')).
 PROJECT_TYPE_NAMES = {-1: "unknown", 0: "project", 1: "macro"}
@@ -295,10 +296,44 @@ def delete_project(app: Any, client: Any, project_id: int,
 # Archive
 
 
+def _open_folios(app: Any, client: Any, project_id: int) -> list[dict]:
+    """The folios of ``project_id`` the editor has open, if it is the
+    current project (the file manager only reads the current one)."""
+    if _current_id(app) != project_id:
+        return []
+    return [{"id": r["id"], "page": r["page"], "book_id": r["book_id"],
+             "description": r["description"]}
+            for r in list_folios(app, client)["folios"] if r["is_open"]]
+
+
+def _no_file_reason(target: str, open_folios: list[dict],
+                    closed: bool) -> str:
+    where = ", ".join(f"{r['id']} (page {r['page']})" for r in open_folios)
+    out = (f"SOLIDWORKS Electrical answered EW_NO_ERROR but no file was "
+           f"written at {target}. ")
+    if open_folios and not closed:
+        out += (f"{len(open_folios)} folio(s) were open in the editor: "
+                f"{where}. Measured 2026-10-20 on 2025 SP5: four archives in "
+                f"a row wrote nothing with one drawing open and unsaved. "
+                f"Pass close_open_folios=True to "
+                f"close them around the archive (the editor saves its copy "
+                f"on close), or close them in the GUI, and run it again")
+    elif open_folios and closed:
+        out += (f"The {len(open_folios)} open folio(s) {where} were closed "
+                f"first, so an open drawing is not the cause this time; see "
+                f"docs/staging.md for what else was ruled out")
+    else:
+        out += ("No folio was open in the editor, so an open drawing is not "
+                "the cause this time; see docs/staging.md for what was ruled "
+                "out")
+    return out
+
+
 def archive_project(app: Any, client: Any, output_path: str,
                     project_id: int | None = None, name: str | None = None,
                     with_dependencies: bool = True,
-                    overwrite: bool = False) -> dict:
+                    overwrite: bool = False,
+                    close_open_folios: bool = False) -> dict:
     """Write a project out as a .tewzip archive.
 
     With ``with_dependencies`` the archive also carries the library content
@@ -310,6 +345,15 @@ def archive_project(app: Any, client: Any, output_path: str,
     set, and then the archive is written next to it under a temporary name
     and moved over it only once it exists: a failed archive never costs the
     old one.
+
+    ``archive`` can also answer EW_NO_ERROR and write nothing (measured
+    2026-10-20: four times on one project with a drawing open and unsaved in
+    the editor; the same call wrote 47 MB the day before). The result never
+    takes the return code's word for it: ``written`` says whether the file
+    is there, and ``reason`` says what was observed when it is not. The API
+    documentation names no precondition; the open-drawing one is the
+    strongest lead, so ``close_open_folios`` closes the open folios of the
+    current project before the archive and reopens them after.
     """
     import pythoncom  # type: ignore
     from win32com.client import VARIANT  # type: ignore
@@ -325,6 +369,7 @@ def archive_project(app: Any, client: Any, output_path: str,
     replacing = os.path.isfile(output_path)
     if replacing and not overwrite:
         return {"ok": False, "project": row, "output_path": output_path,
+                "written": False,
                 "error": "the file already exists and SOLIDWORKS Electrical "
                          "will not archive over it; pass overwrite=True to "
                          "replace it"}
@@ -333,21 +378,40 @@ def archive_project(app: Any, client: Any, output_path: str,
         stem, ext = os.path.splitext(output_path)
         target = f"{stem}.new-{os.getpid()}{ext}"
 
+    open_folios = _open_folios(app, client, row["id"])
+    closed: list[dict] = []
+    if close_open_folios:
+        for r in open_folios:
+            f = find_folio(app, client, file_id=r["id"])
+            closed.append({**r, "close_rc": _rc(f.close())})
+
     mgr = _manager(app)
     ids = VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_I4, [int(row["id"])])
-    rc = _rc(mgr.archive(ids, target, bool(with_dependencies)))
+    try:
+        rc = _rc(mgr.archive(ids, target, bool(with_dependencies)))
+    finally:
+        for r in closed:
+            r["open_rc"] = _rc(find_folio(app, client,
+                                          file_id=r["id"]).open())
     written = rc in (0, None) and os.path.isfile(target)
     if replacing and written:
         os.replace(target, output_path)
     elif replacing and os.path.isfile(target):
         os.remove(target)
     exists = os.path.isfile(output_path)
-    return {"ok": written and exists, "project": row,
-            "output_path": output_path, "exists": exists,
-            "replaced": replacing and written,
-            "size_bytes": os.path.getsize(output_path) if exists else 0,
-            "with_dependencies": bool(with_dependencies),
-            "rc": rc, "rc_name": _rc_name(rc)}
+    out = {"ok": written and exists, "project": row,
+           "output_path": output_path, "written": written, "exists": exists,
+           "replaced": replacing and written,
+           "size_bytes": os.path.getsize(output_path) if exists else 0,
+           "with_dependencies": bool(with_dependencies),
+           "open_folios": open_folios, "closed_folios": closed,
+           "rc": rc, "rc_name": _rc_name(rc)}
+    if not written:
+        out["reason"] = (_no_file_reason(target, open_folios, bool(closed))
+                         if rc in (0, None) else
+                         f"archive answered {_rc_name(rc)}; no file was "
+                         f"written at {target}")
+    return out
 
 
 def unarchive_project(app: Any, client: Any, archive_path: str,

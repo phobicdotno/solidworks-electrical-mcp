@@ -152,7 +152,7 @@ close and is instant either way.
 |---|---|
 | `project_info()` | Name, id, customer, folder path, object counts of the open project. |
 | `list_folios(book_id?, folder_id?, file_type?, description_contains?)` | Pages in tree order: id, page mark, description, type, book/folder/location. |
-| `find_folio(page? / file_id?)` | One page by printed mark (`"61"`) or file id. |
+| `find_folio(page? / file_id?, book_id?)` | One page by printed mark (`"61"`) or file id. Marks repeat across books, so `book_id` picks the book. |
 | `list_locations()` | Locations with tag, tag path, description. |
 | `list_books_and_folders()` | The document tree containers. |
 | `list_components(tag_contains?, location_id?, parent_id?, with_parts?, limit?)` | Devices with tag path, description, parent, location and manufacturer parts. |
@@ -166,7 +166,7 @@ close and is instant either way.
 | `clone_component(source_tag, new_tag, page?, offset_x?, offset_y?, dry_run=True)` | "On sheet 10, clone K32 into K33": new component with the same description, location, class and manufacturer parts, plus the source's symbols on that page copied into the next free slot. Dry run by default. |
 | `add_component(tag, manufacturer, reference, page?, after_tag?, shift_following?, x?, y?, dry_run=True)` | Build a unit with no source to copy. The symbol comes from the manufacturer part itself; scale and rotation from a neighbour, because a cabinet footprint is drawn scaled to real millimetres. `shift_following` inserts into a rail, pushing everything right of `after_tag` along by one device pitch. |
 | `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device. Symbols, cross-references and the BOM are linked by id and follow it; the mark spelled out as literal text does not, so every such place is listed for a human to judge. |
-| `delete_component(component_id? / tag?, pages?, close_gap?)` | Remove a component and its symbols (the undo for a clone or an add). `close_gap` pulls the rail back over the hole. |
+| `delete_component(component_id? / tag?, pages?, file_ids?, book_id?, close_gap?)` | Remove a component and its symbols (the undo for a clone or an add). `file_ids` / `book_id` pick the folios in a multi-book project. A component whose last symbol was removed is already gone. `close_gap` pulls the rail back over the hole. |
 | `rebind_symbol(symbol_id, component_id, dry_run=True)` | Point a drawn symbol at another component, keeping position and connections. For a pasted page that draws its own copy of a device: bind it to the real one, then delete the copy. |
 | `rename_component(tag, new_tag, scan_text?, dry_run=True)` | Retag a device; reports what follows the rename and what does not. |
 | `renumber_components(renames, dry_run=True)` | Retag a whole run in one pass, collision-safe, with temp marks when the old and new sets overlap. |
