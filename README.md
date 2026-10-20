@@ -98,7 +98,7 @@ a snapshot first.
 | `optimize_wire_order(selection, ...)` | Recompute the connection order inside each equipotential. |
 | `generate_terminal_strip_drawings(component_ids?, book_id?, keep_existing?)` | Draw the terminal-strip sheets. |
 | `export_dwg(output_dir, pages? / all_pages?, save_type?, dwg_version?, single_file?)` | DWG/DXF out. |
-| `list_reports()` / `export_reports(...)` / `generate_report_drawings(...)` | The project's saved report queries, to a file or into the document tree. |
+| `list_reports()` / `export_reports(...)` / `generate_report_drawings(report_ids, keep_position?, wait_for_settle=True, settle_timeout=120)` | The project's saved report queries, to a file or into the document tree. The drawings call waits for SOLIDWORKS to finish with the tree before it returns (see below). |
 | `list_wires(...)` / `find_wire(id)` / `update_wire(id, ...)` | The wiring list: both ends of every wire, component and terminal. |
 
 A file-per-page DWG export is rejected without a naming formula, and the
@@ -111,6 +111,20 @@ returns `EW_NO_ERROR` and writes nothing, with the target folder, report ids
 and extension all set and reading back correct. Both exporters are therefore
 judged by what landed on disk, so a run that wrote nothing says so instead of
 reporting success.
+
+Report drawings are a slow write that the API reports as done at once. Right
+after `doGenerateDrawings` returns, the folio list carries dozens of blank
+folios named after the report (no filter suffix, an empty page) at the end of
+the book's top level; about a minute later all but a few of them are gone and
+the report's own folios have been moved to the book's top level, after the
+other reports, or replaced by new ids at the end of their folder, with the
+page marks unchanged. Deleting the blanks inside that window works and is
+wrong: they go by themselves. `generate_report_drawings` therefore polls the
+folio list every few seconds until two listings in a row agree (`settle` in
+the result says how long it took; `wait_for_settle=False` skips it and says
+so) and only then reads the tree. `keep_position=True` puts the report's
+folios back in their old folder and positions; the few blanks that outlive
+the settle are listed under `unmatched_new` for `delete_folio`.
 
 ### The project's own data
 
@@ -178,6 +192,7 @@ close and is instant either way.
 | `place_symbol(tag, symbol_name, x, y, page, ...)` / `remove_symbol(symbol_id)` | Draw an existing component on a page, or undraw it. |
 | `move_symbol` / `move_symbols(moves)` | Move a symbol WITH the wire ends drawn to it. Prefer the batch: moving one at a time walks every line in the project per symbol. |
 | `add_text` / `list_texts` / `remove_text` | Free text on a page. Content is set before insert, unlike every other object. |
+| `list_lines(page)` / `edit_lines(ops, page, dry_run=True)` | Wire segments on one page: move an end (`set`), draw (`add`, `like_line_id` or `wire_style_id`; `synoptic_style_id` for a line-diagram line) or `remove`. Every `set` is checked against the read-back and an end that stayed put is reported as `not_applied`. On a line-diagram folio `like_line_id` copies the style into the synoptic style, a bare `wire_style_id` is refused, and a `set` never takes: remove and add instead. |
 | `check_drawing_rules(page, min_spacing?, box?)` | Crowded or coincident connection points, and anything outside the drawable box. |
 | `check_page_ink(page, ...)` | What a sheet actually DRAWS, measured off an export, which catches a footprint hanging outside the box that `check_drawing_rules` cannot see. |
 | `place_symbols` / `remove_symbols` / `add_texts` / `remove_texts` | Batch forms: one folio close for the whole page. Strongly preferred over the singular ones. |

@@ -68,6 +68,24 @@ is wrong often enough that this distinction is the point.
 
 ### Fixed
 
+- `generate_report_drawings` returned while SOLIDWORKS was still rewriting
+  the tree. It now waits for the folio list to settle (two consecutive
+  listings alike, polled every 3 s, `settle_timeout` 120 s, reported under
+  `settle`; `wait_for_settle=False` skips it with a warning) before it reads
+  the tree, and `keep_position` restores the folder as well as the position
+  of the report's folios, whether SOLIDWORKS moved them with their ids or
+  replaced them with new ids. New folios that match no replaced one (the
+  blanks, below) are left alone and listed under `unmatched_new`.
+- `edit_lines` on a line-diagram folio: `like_line_id` copied the other
+  line's style into `setWireStyleID` on a schematic line, which made
+  `newEwProjectLine` return NULL. The style id a line-diagram line reports
+  is its synoptic style, so it now goes to `synoptic_style_id`; a bare
+  `wire_style_id` on a line diagram is refused with a message that names
+  `synoptic_style_id`.
+- `edit_lines` reported a `set` as ok on the return codes alone. Every
+  `set` is now compared with the read-back; an end that did not move is
+  `applied: false` with a `not_applied` row (requested and read-back
+  coordinates), and the result's `ok` is false.
 - `move_symbol` / `move_symbols` dragged no wires when the page was closed
   in the editor: `getEwProjectLineArrayFromFileID` answers NULL rather than
   an error for a closed folio, and that was read as "no lines". It now falls
@@ -109,6 +127,23 @@ is wrong often enough that this distinction is the point.
 
 ### Measured (SOLIDWORKS Electrical 2025 SP5)
 
+- `doGenerateDrawings` returns before the work is done. Right after the
+  call the folio list carried 48 blank folios named after the report (no
+  filter suffix, an empty page, 3.7 KB when exported) at the end of the
+  book's top level, while the report's 15 folios still had their ids and
+  folder; about a minute later all but the last three blanks were gone and
+  the report's folios had been moved to the book's top level (folder -1,
+  after the cable list). Deleting the blanks inside that window worked,
+  which is exactly the wrong thing to do (2026-10-20, 3-book project).
+- A line end on a line-diagram folio (file type 1) does not move through
+  the API: the four position setters and `update` answer `EW_NO_ERROR` and
+  the line keeps its coordinates on read-back and in a later `list_lines`
+  (line 117.5/290 - 95/290 asked to become 192.5/260 - 95/290). Remove and
+  add instead. On a schematic folio the same setters work.
+- A line-diagram line's `getWireStyleID` answers its synoptic style id
+  (838); the same id as `synoptic_style_id` draws a line, as
+  `wire_style_id` on a new schematic line it makes `newEwProjectLine`
+  return NULL.
 - A symbol displacement below about 0.2 mm is accepted and discarded: the
   setters and `update` return `EW_NO_ERROR` and the value reads back
   unchanged. Bisected on a layout footprint: 0.10, 0.15 and 0.20 dropped,
