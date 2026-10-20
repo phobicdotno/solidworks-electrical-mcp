@@ -123,8 +123,9 @@ wrong: they go by themselves. `generate_report_drawings` therefore polls the
 folio list every few seconds until two listings in a row agree (`settle` in
 the result says how long it took; `wait_for_settle=False` skips it and says
 so) and only then reads the tree. `keep_position=True` puts the report's
-folios back in their old folder and positions; the few blanks that outlive
-the settle are listed under `unmatched_new` for `delete_folio`.
+folios back in their old folder and positions (a run whose tree did not
+settle within the timeout is left alone and says so); the few blanks that
+outlive the settle are listed under `unmatched_new` for `delete_folio`.
 
 ### The project's own data
 
@@ -192,7 +193,7 @@ close and is instant either way.
 | `place_symbol(tag, symbol_name, x, y, page, ...)` / `remove_symbol(symbol_id)` | Draw an existing component on a page, or undraw it. |
 | `move_symbol` / `move_symbols(moves)` | Move a symbol WITH the wire ends drawn to it. Prefer the batch: moving one at a time walks every line in the project per symbol. |
 | `add_text` / `list_texts` / `remove_text` | Free text on a page. Content is set before insert, unlike every other object. |
-| `list_lines(page)` / `edit_lines(ops, page, dry_run=True)` | Wire segments on one page: move an end (`set`), draw (`add`, `like_line_id` or `wire_style_id`; `synoptic_style_id` for a line-diagram line) or `remove`. Every `set` is checked against the read-back and an end that stayed put is reported as `not_applied`. On a line-diagram folio `like_line_id` copies the style into the synoptic style, a bare `wire_style_id` is refused, and a `set` never takes: remove and add instead. |
+| `list_lines(page)` / `edit_lines(ops, page, dry_run=True)` | Wire segments on one page: move an end (`set`), draw (`add`, `like_line_id` or `wire_style_id`; `synoptic_style_id` for a line-diagram line) or `remove`. Every `set` is checked against the read-back: an end that stayed put is reported as `not_applied`, a line that merged into a new id as `applied: "unknown"`. On a line-diagram folio `like_line_id` copies the style into the synoptic style, a bare `wire_style_id` is refused, and a `set` never takes: remove and add instead. |
 | `check_drawing_rules(page, min_spacing?, box?)` | Crowded or coincident connection points, and anything outside the drawable box. |
 | `check_page_ink(page, ...)` | What a sheet actually DRAWS, measured off an export, which catches a footprint hanging outside the box that `check_drawing_rules` cannot see. |
 | `place_symbols` / `remove_symbols` / `add_texts` / `remove_texts` | Batch forms: one folio close for the whole page. Strongly preferred over the singular ones. |

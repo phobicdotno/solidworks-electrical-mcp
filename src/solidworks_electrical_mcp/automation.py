@@ -600,6 +600,10 @@ def _wait_for_settle(app: Any, client: Any, interval: float = SETTLE_INTERVAL,
     (``settled``, ``polls``, ``seconds``, ``transient_ids``: folios seen in
     an earlier poll but not in the last one).
     """
+    timeout = float(timeout)
+    if not timeout == timeout or timeout < 0:        # NaN or negative
+        raise ValueError(f"settle_timeout must be a number of seconds >= 0, "
+                         f"got {timeout!r}")
     start = _CLOCK()
     slots = _folio_slots(app, client)
     seen: set[int] = set(slots)
@@ -644,12 +648,17 @@ def _restore_positions(app: Any, client: Any, before: dict[int, dict],
 
     The old slots are the fix in both cases. Every folio that survived goes
     back to its old (book, folder, position); the new folios of a replaced
-    group take the old ones' folder and positions in order (matched by the
-    folder they landed in, else by description, else as the only group);
-    when the report grew, the pages that followed move up by the
+    group take the old ones' folder and positions in order, matched by page
+    mark first (the regenerated pages keep the old marks, the blanks carry
+    new ones), then by description (a page the report grew by), and only
+    when neither tells anything by the folder they landed in or as the only
+    group. When the report grew, the pages that followed move up by the
     difference. A new folio that matches nothing is left alone and listed
     in ``unmatched_new``: the blank folios SOLIDWORKS leaves behind look
-    like that.
+    like that. Residual ambiguity: a report with no filter suffix names its
+    blanks exactly like its pages; a name-only match is taken for a grown
+    page only when it sits after the mark-matched pages (the blanks sit
+    before them), so check ``unmatched_new`` and the tree after such a run.
     """
     from . import rawfields as rf
     gone = [r for i, r in before.items() if i not in after]
@@ -665,24 +674,43 @@ def _restore_positions(app: Any, client: Any, before: dict[int, dict],
     groups = []
     for grp in sorted({key(r) for r in gone}, key=str):
         olds = sorted((r for r in gone if key(r) == grp), key=pos)
-        groups.append({"key": grp, "olds": olds, "news": [],
-                       "descs": {str(r["description"]) for r in olds}})
+        groups.append({"key": grp, "olds": olds, "news": [], "by_desc": [],
+                       "descs": {str(r["description"]) for r in olds},
+                       "tags": {str(r["page"]) for r in olds}})
     all_descs = set().union(*(g["descs"] for g in groups)) if groups else set()
+    all_tags = set().union(*(g["tags"] for g in groups)) if groups else set()
+    by_tag = any(str(r["page"]) in all_tags for r in new)
     by_desc = any(str(r["description"]) in all_descs for r in new)
     unmatched: list[int] = []
     for r in sorted(new, key=pos):
-        if by_desc:
+        cands, bucket = [], "news"
+        if by_tag:
+            cands = [g for g in groups if str(r["page"]) in g["tags"]]
+        if not cands and by_desc:
             cands = [g for g in groups if str(r["description"]) in g["descs"]]
-            if len(cands) > 1:
-                cands = [g for g in cands if g["key"] == key(r)] or cands[:1]
-        else:
+            bucket = "by_desc"
+        if len(cands) > 1:
+            cands = [g for g in cands if g["key"] == key(r)] or cands[:1]
+        if not cands and not by_tag and not by_desc:
             cands = [g for g in groups if g["key"] == key(r)]
             if not cands and len(groups) == 1:
                 cands = groups
         if not cands:
             unmatched.append(r["id"])
             continue
-        cands[0]["news"].append(r)
+        cands[0][bucket].append(r)
+    for g in groups:
+        # Pages that kept their mark first, then the ones matched by name
+        # only (a page the report grew by). A report's pages are drawn in
+        # sequence, so a name-only page counts as grown only when it sits
+        # after the mark-matched ones; the blanks are made before the
+        # report's pages are moved and so sit before them.
+        grown = g["by_desc"]
+        if g["news"]:
+            tail = max(pos(r) for r in g["news"])
+            grown = [r for r in g["by_desc"] if pos(r) > tail]
+            unmatched += [r["id"] for r in g["by_desc"] if pos(r) <= tail]
+        g["news"] = g["news"] + grown
 
     for g in groups:
         olds, news = g["olds"], g["news"]
@@ -791,6 +819,10 @@ def generate_report_drawings(app: Any, client: Any,
             after, info = _wait_for_settle(app, client,
                                            timeout=float(settle_timeout))
             settles.append(info)
+            if not info["settled"]:
+                # The tree is still moving: a restore now would write
+                # positions SOLIDWORKS is about to rewrite.
+                continue
         else:
             after = _folio_slots(app, client) if keep_position else {}
         if keep_position:
@@ -805,6 +837,9 @@ def generate_report_drawings(app: Any, client: Any,
         if not all(s["settled"] for s in settles):
             out["error"] = next(s["error"] for s in settles
                                 if not s["settled"])
+            if keep_position:
+                out["error"] += ("; keep_position was not applied to that "
+                                 "run, use move_folio once the tree is still")
     else:
         out["warning"] = ("returned without waiting: SOLIDWORKS keeps "
                           "rewriting the tree for about a minute after "

@@ -3932,7 +3932,15 @@ def edit_lines(app: Any, client: Any, ops: list,
     for row in applied:
         if row["op"] == "set" and row.get("ok"):
             misses = [m for m in not_applied if m["index"] == row["index"]]
-            if misses:
+            if any(m["end"] is None for m in misses):
+                # The id is gone: merged into a neighbour or re-formed
+                # under a new id, which is what the note warns about. Not
+                # a failure, not a verified move either.
+                row["applied"] = "unknown"
+                row["error"] = ("line id not on the folio after the edit "
+                                "(merged or re-formed with a new id); judge "
+                                "the move from lines_after")
+            elif misses:
                 row["ok"] = False
                 row["applied"] = False
                 row["error"] = ("update answered EW_NO_ERROR but the "
@@ -3954,9 +3962,11 @@ def edit_lines(app: Any, client: Any, ops: list,
 def _unmoved_ends(plan: list, applied: list, after: list) -> list:
     """Compare every applied ``set`` with the lines read back.
 
-    One row per end that is not where it was asked to be, or for a line
-    that is no longer on the folio at all (merged, or re-formed with a new
-    id, which the caller must judge from ``lines_after``)."""
+    One row per end that is not where it was asked to be, or one row with
+    ``end: None`` for a line that is no longer on the folio at all (merged,
+    or re-formed with a new id, which the caller must judge from
+    ``lines_after``; the caller reports that as unknown, not as a
+    failure)."""
     rows = []
     by_id = {ln["line_id"]: ln for ln in after}
     done = {r["index"] for r in applied if r["op"] == "set" and r.get("ok")}

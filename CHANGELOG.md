@@ -74,8 +74,10 @@ is wrong often enough that this distinction is the point.
   `settle`; `wait_for_settle=False` skips it with a warning) before it reads
   the tree, and `keep_position` restores the folder as well as the position
   of the report's folios, whether SOLIDWORKS moved them with their ids or
-  replaced them with new ids. New folios that match no replaced one (the
-  blanks, below) are left alone and listed under `unmatched_new`.
+  replaced them with new ids (matched by page mark first, then by name).
+  New folios that match no replaced one (the blanks, below) are left alone
+  and listed under `unmatched_new`; a run whose tree did not settle is not
+  repositioned at all.
 - `edit_lines` on a line-diagram folio: `like_line_id` copied the other
   line's style into `setWireStyleID` on a schematic line, which made
   `newEwProjectLine` return NULL. The style id a line-diagram line reports
@@ -85,7 +87,9 @@ is wrong often enough that this distinction is the point.
 - `edit_lines` reported a `set` as ok on the return codes alone. Every
   `set` is now compared with the read-back; an end that did not move is
   `applied: false` with a `not_applied` row (requested and read-back
-  coordinates), and the result's `ok` is false.
+  coordinates), and the result's `ok` is false. A line whose id is gone
+  afterwards (merged, or re-formed under a new id, normal on a schematic)
+  is `applied: "unknown"`, neither a success nor a failure.
 - `move_symbol` / `move_symbols` dragged no wires when the page was closed
   in the editor: `getEwProjectLineArrayFromFileID` answers NULL rather than
   an error for a closed folio, and that was read as "no lines". It now falls

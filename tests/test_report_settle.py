@@ -21,6 +21,10 @@ Cases:
      matched to the gone group by description and get the old folder back;
      the blanks are not mistaken for report pages
   L. two reports in one call: one settle per run
+  M. a report with no filter suffix names its blanks exactly like its
+     pages: the regenerated pages are matched by page mark, the blanks are
+     not taken for report pages
+  N. a NaN or negative settle_timeout is refused, not looped on
 
 Run directly:
     .venv/Scripts/python.exe tests/test_report_settle.py
@@ -147,9 +151,11 @@ class FakeProject:
     """``generate`` puts the blank folios on the tree at once and queues
     the later steps; each listing applies one queued step (``tick``)."""
 
-    def __init__(self, folios, replace_ids=False, never_settle=False):
+    def __init__(self, folios, replace_ids=False, never_settle=False,
+                 unfiltered=False):
         self.folios = folios
         self.replace_ids, self.never_settle = replace_ids, never_settle
+        self.unfiltered = unfiltered      # report pages named like blanks
         self.queue = []
         self.next_id = 50000
         self.listings = 0
@@ -183,7 +189,7 @@ class FakeProject:
                 for i, f in enumerate(olds):
                     self.next_id += 1
                     self.folios.append(FakeFolio(self.next_id, f.tag, top + i,
-                                                 TOP, 1, report))
+                                                 TOP, 1, report, f.desc))
             else:
                 for i, f in enumerate(olds):
                     f.folder, f.position = TOP, top + i
@@ -232,14 +238,15 @@ class FakeTime:
         return self.now
 
 
-def world(**kw):
+def world(unfiltered=False, **kw):
     """Book 1: a schematic, then the reports folder with BOM (report 42,
     three pages at 120-122) and cable list (report 43, two pages at
     123-124), then one more page after the folder."""
+    bom = BOM if unfiltered else BOM_FILTERED
     folios = [FakeFolio(37734, "70", 77, folder=27634),
-              FakeFolio(45012, "72", 120, report=42),
-              FakeFolio(45013, "73", 121, report=42),
-              FakeFolio(45014, "74", 122, report=42),
+              FakeFolio(45012, "72", 120, report=42, desc=bom),
+              FakeFolio(45013, "73", 121, report=42, desc=bom),
+              FakeFolio(45014, "74", 122, report=42, desc=bom),
               FakeFolio(45027, "87", 123, report=43, desc="Cable list"),
               FakeFolio(45028, "88", 124, report=43, desc="Cable list"),
               FakeFolio(46000, "91", 125, folder=27640)]
@@ -313,8 +320,13 @@ s = r["settle"][0]
 check(not r["ok"] and not s["settled"] and s["seconds"] == 30.0
       and s["polls"] == 11,
       f"J: the wait gives up at the timeout, got {s}")
-check("still changing" in r.get("error", "") and "list_folios" in r["error"],
-      f"J: the result says why, got {r.get('error')!r}")
+check("still changing" in r.get("error", "") and "list_folios" in r["error"]
+      and "keep_position" in r["error"],
+      f"J: the result says why and that nothing was restored, got "
+      f"{r.get('error')!r}")
+check(r["positions"] == [] and all(f.writes == [] for f in proj.folios),
+      f"J: keep_position must not touch a tree that is still moving, got "
+      f"{r['positions']}")
 ok("J ok: a tree that keeps changing is reported, not waited on forever",
    mark)
 
@@ -354,6 +366,39 @@ check(r["ok"] and len(r["settle"]) == 2 and len(r["positions"]) == 2
 check(order(proj)[:7] == ["70", "72", "73", "74", "87", "88", "91"],
       f"L: both reports back in place, got {order(proj)}")
 ok("L ok: every run waits for its own settle", mark)
+
+mark = len(failures)
+# --- M: blanks named exactly like the report pages ------------------------
+app, proj, t = world(replace_ids=True, unfiltered=True)
+r = auto.generate_report_drawings(app, CLIENT, report_ids=[42],
+                                  keep_position=True)
+check(r["ok"], f"M: got {r}")
+pos = r["positions"][0]
+check(len(pos["unmatched_new"]) == 3,
+      f"M: the three blanks are still unmatched, by page mark, got {pos}")
+bom = sorted((f for f in proj.folios if f.report == 42),
+             key=lambda f: f.position)
+check([f.tag for f in bom] == ["72", "73", "74"]
+      and [f.position for f in bom] == [120, 121, 122]
+      and all(f.folder == REPORTS for f in bom),
+      f"M: the pages that kept their marks take the old slots, got "
+      f"{[(f.tag, f.folder, f.position) for f in bom]}")
+check(all(f.writes == [] for f in proj.folios if f.report == 99),
+      "M: no blank is moved")
+ok("M ok: page marks tell report pages from blanks with the same name",
+   mark)
+
+mark = len(failures)
+# --- N: a bad timeout is refused -------------------------------------------
+for bad in (float("nan"), -1):
+    app, proj, t = world()
+    try:
+        auto.generate_report_drawings(app, CLIENT, report_ids=[42],
+                                      settle_timeout=bad)
+        check(False, f"N: settle_timeout={bad!r} must be refused")
+    except ValueError as exc:
+        check("settle_timeout" in str(exc), f"N: got {exc}")
+ok("N ok: NaN and negative timeouts are refused", mark)
 
 print()
 if failures:

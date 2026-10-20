@@ -21,8 +21,9 @@ Cases:
      read-back keeps the old start point, the result says applied: false,
      lists the end in not_applied, and the note says remove and add
   E. schematic folio, set that takes: applied: true, no not_applied
-  F. a set whose line is gone after the edit (merged) is reported, not
-     silently counted as applied
+  F. a set whose line is gone after the edit (merged, or re-formed with a
+     new id) is reported as unknown: listed in not_applied, neither counted
+     as applied nor as a failure (a merge is normal on a schematic)
   G. a dry run on a line diagram warns about the set before anything runs
 
 Run directly:
@@ -372,10 +373,17 @@ next(ln for ln in proj.lines if ln.lid == 30100).vanish_on_update = True
 r = wf.edit_lines(app, CLIENT, file_id=400, dry_run=False,
                   ops=[{"op": "set", "line_id": 30100, "x2": 170}])
 na = r.get("not_applied") or []
-check(not r["ok"] and len(na) == 1 and na[0]["end"] is None
+check(len(na) == 1 and na[0]["end"] is None
       and "not on the folio" in na[0]["reason"],
       f"F: a vanished line is reported, got {r}")
-ok("F ok: a line gone after the edit is not counted as applied", mark)
+row = r["applied"][0]
+check(r["ok"] and row["ok"] and row.get("applied") == "unknown"
+      and "lines_after" in row.get("error", ""),
+      f"F: a merged line is unknown, not a failure, got {row}")
+check("merges collinear" in r["note"],
+      "F: on a schematic the note stays the merge note")
+ok("F ok: a line gone after the edit is unknown, not applied and not "
+   "failed", mark)
 
 mark = len(failures)
 # --- G: dry run warns on a line diagram ------------------------------------
