@@ -1121,14 +1121,23 @@ def delete_component(app: Any, client: Any, component_id: int | None = None,
                                         "from_x": cx, "to_x": cx - pitch})
             if was_open:
                 f.open()
-        rc = _rc(comp.remove())
+        try:
+            rc = _rc(comp.remove())
+            answer = _rc_name(rc)
+        except Exception as e:  # noqa: BLE001
+            # A COM object whose database row is gone may raise rather than
+            # answer a code; -1 keeps it out of the (0, None) success set.
+            rc, answer = -1, f"{type(e).__name__}: {e}"
         took_symbols = any(not r.get("skipped") for r in symbols_removed)
         if rc not in (0, None) and took_symbols \
                 and _u(mgr.findEwProjectComponentByID(int(cid))) is None:
             gone_with_last_symbol = True
-            note = ("the retried remove answered " + _rc_name(rc) +
-                    " because SOLIDWORKS Electrical had already deleted the "
-                    "component with its last symbol; it is gone")
+            note = (f"the retried remove answered {answer} because "
+                    f"SOLIDWORKS Electrical had already deleted the "
+                    f"component with its last symbol; it is gone")
+        elif rc == -1:
+            raise RuntimeError(f"remove raised {answer} and the component "
+                               f"{cid} still exists")
     skipped = [r for r in symbols_removed if r.get("skipped")]
     return {"ok": rc in (0, None) or gone_with_last_symbol, "removed": row,
             "rc": rc, "rc_name": _rc_name(rc),

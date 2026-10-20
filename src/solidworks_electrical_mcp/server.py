@@ -1629,7 +1629,8 @@ def find_folio(page: str | int | None = None,
 
     Page marks repeat across books (every book has a "01"), so in a
     multi-book project give ``book_id`` with the page, or ``file_id``; an
-    ambiguous mark is refused with the folio and book ids to choose from."""
+    ambiguous mark is refused with the folio and book ids to choose from.
+    An int ``page`` that matches no mark is taken as a folio id."""
     def _go(app, client):
         return wf._folio_row(wf.find_folio(app, client, page=page,
                                            file_id=file_id, book_id=book_id))
@@ -1755,7 +1756,8 @@ def delete_component(component_id: int | None = None,
     (fast), else from every folio (slow on a large project). In a
     multi-book project a page mark like "14" exists once per book: pass
     ``file_ids`` (folio ids from list_folios), or ``book_id`` with
-    ``pages``.
+    ``pages``. An int in ``pages`` that matches no page mark is taken as a
+    folio id.
 
     SOLIDWORKS Electrical deletes a component together with its last
     symbol. After ``remove_symbols`` took a device's last footprint the

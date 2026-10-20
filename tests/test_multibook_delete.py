@@ -143,7 +143,11 @@ class FakeComponent:
     def getChildrenCount(self):
         return (0, 0)
 
+    raises_when_gone = False
+
     def remove(self):
+        if self.removed and self.raises_when_gone:
+            raise OSError("com_error: object is gone")
         if self.removed:
             return 22                       # EW_OBJECT_NOT_FOUND
         if self.project.symbols_of(self.cid):
@@ -378,6 +382,16 @@ try:
           and "last symbol" in r["note"],
           f"G: the result must say why the retry failed, got {r}")
     check(r["rc"] == 22, f"G: the raw rc stays visible, got {r['rc']}")
+    # The COM object may raise instead of answering a code once its row
+    # is gone; the outcome must be the same.
+    app, proj, f14a, f14b, f18 = world()
+    k3b = proj.component(201, "K3B")
+    k3b.raises_when_gone = True
+    proj.symbol(5, f14a, k3b)
+    r = wf.delete_component(app, CLIENT, component_id=201, file_ids=[30604])
+    check(r["ok"] and r["gone_with_last_symbol"] and "OSError" in r["note"],
+          f"G: a raising remove on a gone component is still success, "
+          f"got {r}")
     ok("G ok: component gone with its last symbol counts as removed", mark)
 
     mark = len(failures)
