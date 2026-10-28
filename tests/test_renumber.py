@@ -104,15 +104,19 @@ def run(comps, renames, **kw):
     history.clear()
     by_tag = {c.tag: c for c in comps}
     orig = {n: getattr(wf, n) for n in
-            ("_project", "_each", "_find_one_component",
-             "_text_references_multi", "_symbols_bound_to", "find_folio")}
+            ("_project", "_each", "_find_one_component", "_find_components_by_tags",
+             "_text_references_multi", "_symbols_bound_to",
+             "_symbols_bound_to_many", "find_folio")}
     wf._project = lambda app: FakeProject(comps)
     wf._each = lambda client, arr: list(arr or ())
     wf._find_one_component = lambda app, client, tag: (
         by_tag[tag] if tag in by_tag
         else next(c for c in comps if c.tag == tag))
+    wf._find_components_by_tags = lambda app, client, tags: {
+        t: wf._find_one_component(app, client, t) for t in tags}
     wf._text_references_multi = lambda app, client, tags: []
     wf._symbols_bound_to = lambda app, client, cid: []
+    wf._symbols_bound_to_many = lambda app, client, ids: {i: [] for i in ids}
     wf.find_folio = lambda app, client, **k: None
     try:
         return wf.renumber_components(None, None, renames=renames,

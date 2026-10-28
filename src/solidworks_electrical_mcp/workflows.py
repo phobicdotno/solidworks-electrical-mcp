@@ -699,6 +699,40 @@ def _find_one_component(app: Any, client: Any, tag: str) -> Any:
     return hits[0]
 
 
+def _find_components_by_tags(app: Any, client: Any, tags: list) -> dict:
+    """``_find_one_component`` for several tags from ONE pass: {tag: comp}.
+
+    Same matching and the same errors (missing or ambiguous) as the single
+    lookup, raised for the first offending tag in the order given.
+    """
+    proj = _project(app)
+    mgr = _u(proj.getEwProjectComponentManager())
+    wants = [(t, t.strip(), t.strip().lstrip("-")) for t in tags]
+    hits: dict = {t: [] for t, _, _ in wants}
+    for c in _each(client, _u(mgr.getEwProjectComponentArray())):
+        ct = str(_u(c.getTag()))
+        tp = None
+        for t, want, bare in wants:
+            if ct == want or ct == bare:
+                hits[t].append(c)
+                continue
+            if tp is None:
+                tp = str(_u(c.getTagPath()))
+            if tp == want or tp.endswith("-" + bare):
+                hits[t].append(c)
+    out = {}
+    for t, _, _ in wants:
+        h = hits[t]
+        if not h:
+            raise LookupError(f"no component with tag {t!r}")
+        if len(h) > 1:
+            paths = [_u(c.getTagPath()) for c in h]
+            raise LookupError(f"tag {t!r} is ambiguous: {paths}; give the "
+                              "full tag path")
+        out[t] = h[0]
+    return out
+
+
 def _opt_id(comp: Any, getter: str) -> Any:
     """``comp.<getter>()`` unwrapped, or None when the object has no such
     member (test doubles, or a COM object of another type)."""
@@ -1890,9 +1924,12 @@ def renumber_components(app: Any, client: Any, renames: list,
     if not pairs:
         raise ValueError("no renames given")
 
+    # One pass over the components for every old mark: a lookup per rename
+    # read all 1636 components again for each of 41 marks (2026-10-28).
+    found = _find_components_by_tags(app, client, [o for o, _ in pairs])
     resolved = []
     for old, new in pairs:
-        comp = _find_one_component(app, client, old)
+        comp = found[old]
         root = (str(_u(comp.getTagRoot()) or "").strip()
                 or _tag_root(str(_u(comp.getTag()))))
         new_root = _tag_root(new)
