@@ -407,6 +407,9 @@ class ElectricalApp:
         target = self._root_target(root)
         if target_path:
             target = self._navigate(target, target_path.split("."))
+        return self._run_ops(target, ops)
+
+    def _run_ops(self, target: Any, ops: list[dict]) -> list[Any]:
         results: list[Any] = []
         for op in ops:
             # Isolate per-op failures (as array_ops does) so a stateful build
@@ -415,7 +418,18 @@ class ElectricalApp:
             # interpreting after the first failure if the sequence is ordered.
             try:
                 result = self._eval_member(target, op["member"], op.get("args"))
-                results.append(coerce_value(result))
+                if op.get("then"):
+                    # Run ops on the object this member returned, while the
+                    # owner is still retained: a child edited through a fresh
+                    # navigation is discarded (a cable core set via
+                    # findByManufacturerAndReference(...).getEwCableCoreAt(i)
+                    # read back empty; it only sticks when the owning
+                    # reference's update() runs on the same wrapper).
+                    child = result[0] if isinstance(result, tuple) else result
+                    results.append({"result": coerce_value(result),
+                                    "then": self._run_ops(child, op["then"])})
+                else:
+                    results.append(coerce_value(result))
             except Exception as exc:  # noqa: BLE001
                 results.append({"error": f"{type(exc).__name__}: {exc}"})
         return results

@@ -491,6 +491,12 @@ def call_ops(target: str | None, ops: list[dict],
         ``(object, errorCode)`` tuples unwrapped). Pass ``null``/empty to
         operate directly on the ``root`` object.
     ops : list of ``{"member": str, "args": [...] | null}`` applied in order.
+        An op may carry ``"then": [ops]``: those run on the object the member
+        returned, while the target stays retained. Needed to edit a child
+        such as a cable core: ``{"member": "getEwCableCoreAt", "args": [0],
+        "then": [{"member": "setColorCode", "args": ["WH"]}]}`` followed by
+        ``update`` on the reference. Setting the core through a separate
+        navigation is lost.
     root : ``"application"`` (default) / ``"api"`` / ``"factory"``.
 
     Example
