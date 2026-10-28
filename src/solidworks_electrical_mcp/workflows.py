@@ -1742,22 +1742,40 @@ def _text_references_multi(app: Any, client: Any, tags: list) -> list:
 
 def _symbols_bound_to(app: Any, client: Any, component_id: int) -> list:
     """Every drawn instance of a component, across all folios."""
+    return _symbols_bound_to_many(app, client, [component_id])[component_id]
+
+
+def _symbols_bound_to_many(app: Any, client: Any,
+                           component_ids: list) -> dict:
+    """Drawn instances of several components, from ONE sweep of the folios.
+
+    A per-component sweep reads every symbol of every folio again for each
+    device: a 41-device renumber on a 118-folio project ran past the 30-minute
+    client timeout with SOLIDWORKS at full CPU (2026-10-28). Only the object id
+    is read for symbols that belong to none of the components.
+    """
+    wanted = {int(c) for c in component_ids}
+    out: dict = {c: [] for c in wanted}
     proj = _project(app)
     file_mgr = _u(proj.getEwProjectFileManager())
     sym_mgr = _u(proj.getEwProjectSymbolManager())
-    out = []
     for f in _each(client, _u(file_mgr.getEwProjectFileArray())):
         fid = _u(f.getID())
+        page = None
         for sym in _each(client, _u(sym_mgr.getProjectSymbolsFromFileID(fid))):
-            if _u(sym.getObjectID()) != component_id:
+            oid = _u(sym.getObjectID())
+            if oid not in wanted:
                 continue
-            out.append({"page": _u(f.getTag()), "file_id": fid,
-                        "symbol_id": _u(sym.getID()),
-                        "symbol_name": _u(sym.getEwSymbolName()),
-                        "symbol_type": SYMBOL_TYPE_NAMES.get(
-                            _u(sym.getEwSymbolType()),
-                            str(_u(sym.getEwSymbolType()))),
-                        "is_open": bool(_u(f.isOpen()))})
+            if page is None:
+                page = _u(f.getTag())
+                is_open = bool(_u(f.isOpen()))
+            out[oid].append({"page": page, "file_id": fid,
+                             "symbol_id": _u(sym.getID()),
+                             "symbol_name": _u(sym.getEwSymbolName()),
+                             "symbol_type": SYMBOL_TYPE_NAMES.get(
+                                 _u(sym.getEwSymbolType()),
+                                 str(_u(sym.getEwSymbolType()))),
+                             "is_open": is_open})
     return out
 
 
@@ -1931,8 +1949,8 @@ def renumber_components(app: Any, client: Any, renames: list,
 
     text_refs = (_text_references_multi(app, client, sorted(sources))
                  if scan_text else None)
-    bound = {r["old"]: _symbols_bound_to(app, client, r["id"])
-             for r in resolved}
+    by_id = _symbols_bound_to_many(app, client, [r["id"] for r in resolved])
+    bound = {r["old"]: by_id[r["id"]] for r in resolved}
 
     plan = {
         "renames": [{"old": r["old"], "new": r["new"], "id": r["id"],
