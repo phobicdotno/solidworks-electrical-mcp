@@ -3795,10 +3795,19 @@ def list_lines(app: Any, client: Any, page: str | int | None = None,
 
 
 LINE_DIAGRAM_SET_NOTE = (
-    "a line end on a line-diagram folio does not move through the API: the "
+    "a line-diagram (synoptic) line end does not move through the API: the "
     "position setters and update() answer EW_NO_ERROR and the line keeps "
-    "its coordinates (measured 2026-10-20, 2025 SP5); remove the line and "
-    "add a new one with synoptic_style_id or like_line_id instead")
+    "its coordinates (measured 2026-10-20 on a line-diagram folio and "
+    "2026-10-29 on synoptic lines of a mixed-scheme folio, 2025 SP5); pass "
+    "\"redraw\": true on the set to remove the line and add a new one in the "
+    "same synoptic style, or do the remove and add yourself")
+
+REDRAW_CABLE_NOTE = (
+    "a redrawn line is a new line: a cable that sat on the old one is left "
+    "without a line (its label disappears on every page of the mesh). Put "
+    "it back with the GUI \"Add a cable\" on the new line, then delete the "
+    "old cable and rename the new one to the old mark (renaming also lays "
+    "the label out again, horizontal where the line is long enough)")
 
 
 def edit_lines(app: Any, client: Any, ops: list,
@@ -3809,7 +3818,10 @@ def edit_lines(app: Any, client: Any, ops: list,
     ``ops`` is applied in order, each one of:
 
     * ``{"op": "set", "line_id": n, "x1"?, "y1"?, "x2"?, "y2"?}`` - move one
-      or both ends of an existing line (unset coordinates stay);
+      or both ends of an existing line (unset coordinates stay). Add
+      ``"redraw": true`` for a synoptic (line-diagram) line, which never
+      moves through the setters: the line is removed and drawn again in its
+      own synoptic style, and the row reports the new ``line_id``;
     * ``{"op": "add", "x1", "y1", "x2", "y2", "wire_style_id"? | "like_line_id"?}``
       - draw a new schematic line, styled like another line or by id;
     * ``{"op": "add", ..., "synoptic_style_id": n}`` - draw a line-diagram
@@ -3830,7 +3842,12 @@ def edit_lines(app: Any, client: Any, ops: list,
     not move: the four setters and ``update`` all answer EW_NO_ERROR and the
     read-back keeps the old coordinates. The result says so
     (``applied: false`` and a ``not_applied`` row per end that stayed);
-    remove the line and add a new one instead.
+    remove the line and add a new one instead, or pass ``redraw``. The same
+    holds for synoptic lines (``getEwLineType`` 1) on a mixed-scheme folio
+    (file type 12), measured 2026-10-29 on the cable and coax lines of a
+    Targabox page, so the check is per line, not per folio. A redraw leaves
+    a cable that sat on the old line without a line; the result carries a
+    ``redraw_note`` with the GUI recipe to put it back.
 
     Connectivity comes from geometry: a line becomes part of a wire only
     where its ends sit on connection points or on other lines' ends, so an
@@ -3862,10 +3879,21 @@ def edit_lines(app: Any, client: Any, ops: list,
                 problems.append({"index": i, "error": f"line {lid} is not on this folio"})
                 continue
             to = [float(op.get(k, ln[k])) for k in ("x1", "y1", "x2", "y2")]
-            plan.append({"index": i, "op": "set", "line_id": lid,
-                         "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]], "to": to})
-            if line_diagram:
-                warnings.append({"index": i, "warning": LINE_DIAGRAM_SET_NOTE})
+            # Synoptic lines also live on mixed-scheme folios (file type 12)
+            # next to schematic ones, so judge the line, not only the folio.
+            synoptic = line_diagram or _u(ln["obj"].getEwLineType()) == 1
+            if synoptic and op.get("redraw"):
+                plan.append({"index": i, "op": "redraw", "line_id": lid,
+                             "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]],
+                             "to": to,
+                             "synoptic_style_id": _u(ln["obj"].getWireStyleID())})
+                warnings.append({"index": i, "warning": REDRAW_CABLE_NOTE})
+            else:
+                plan.append({"index": i, "op": "set", "line_id": lid,
+                             "synoptic": synoptic,
+                             "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]], "to": to})
+                if synoptic:
+                    warnings.append({"index": i, "warning": LINE_DIAGRAM_SET_NOTE})
         elif kind == "add":
             try:
                 to = [float(op[k]) for k in ("x1", "y1", "x2", "y2")]
@@ -3909,7 +3937,7 @@ def edit_lines(app: Any, client: Any, ops: list,
         else:
             problems.append({"index": i, "error": f"unknown op {kind!r}"})
             continue
-        if kind in ("set", "add"):
+        if kind in ("set", "add") and plan:
             x1, y1, x2, y2 = plan[-1]["to"]
             if abs(x1 - x2) < _SNAP and abs(y1 - y2) < _SNAP:
                 problems.append({"index": i, "error": "zero-length line"})
@@ -3936,7 +3964,32 @@ def edit_lines(app: Any, client: Any, ops: list,
     for p in plan:
         row = {"index": p["index"], "op": p["op"]}
         try:
-            if p["op"] in ("set", "remove"):
+            if p["op"] == "redraw":
+                old = _u(lmgr.findEwProjectLineByID(int(p["line_id"])))
+                if old is None:
+                    row.update(ok=False, error="line not found (merged by an earlier op?)")
+                    applied.append(row)
+                    continue
+                row["remove"] = _rc_name(_rc(old.remove()))
+                obj = _u(f.newEwProjectLine(1))        # kLineSynoptic
+                if obj is None:
+                    row.update(ok=False, error="old line removed, but "
+                               "newEwProjectLine returned NULL")
+                    applied.append(row)
+                    continue
+                x1, y1, x2, y2 = p["to"]
+                _rc(obj.setStartPointXPosition(x1))
+                _rc(obj.setStartPointYPosition(y1))
+                _rc(obj.setEndPointXPosition(x2))
+                _rc(obj.setEndPointYPosition(y2))
+                row["setWireStyleSynopticID"] = _rc_name(
+                    _rc(obj.setWireStyleSynopticID(int(p["synoptic_style_id"]))))
+                row["insert"] = _rc_name(_rc(obj.insert()))
+                row["replaced_line_id"] = p["line_id"]
+                row["line_id"] = _u(obj.getID())
+                row["ok"] = (row["remove"] == "EW_NO_ERROR"
+                             and row["insert"] == "EW_NO_ERROR")
+            elif p["op"] in ("set", "remove"):
                 # Re-fetch by id: handles from before the close are stale.
                 obj = _u(lmgr.findEwProjectLineByID(int(p["line_id"])))
                 if obj is None:
@@ -4009,8 +4062,12 @@ def edit_lines(app: Any, client: Any, ops: list,
                    "segments and re-forms wires on update"}
     if not_applied:
         out["not_applied"] = not_applied
-        if line_diagram:
+        missed = {m["index"] for m in not_applied}
+        if any(p.get("synoptic") for p in plan
+               if p["op"] == "set" and p["index"] in missed):
             out["note"] = LINE_DIAGRAM_SET_NOTE
+    if any(p["op"] == "redraw" for p in plan):
+        out["redraw_note"] = REDRAW_CABLE_NOTE
     return out
 
 

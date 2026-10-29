@@ -399,6 +399,55 @@ r = wf.edit_lines(app, CLIENT, file_id=400, dry_run=True,
 check("warnings" not in r, "G: no warning on a schematic")
 ok("G ok: the dry run warns before a line-diagram set", mark)
 
+mark = len(failures)
+# --- H: synoptic line on a mixed-scheme folio warns too ---------------------
+app, proj = world()
+proj.folios[500] = FakeFolio(500, 12, proj)
+proj.lines.append(FakeLine(46549, 500, 169.5, 345.9, 213.75, 347.5, 34, 1,
+                           frozen=True))
+r = wf.edit_lines(app, CLIENT, file_id=500, box={"y_max": 400.0},
+                  dry_run=True,
+                  ops=[{"op": "set", "line_id": 46549, "x1": 184.5}])
+check(r["ok"] and r.get("warnings")
+      and "redraw" in r["warnings"][0]["warning"],
+      f"H: a synoptic line on a mixed folio warns and names redraw, got {r}")
+r = wf.edit_lines(app, CLIENT, file_id=500, box={"y_max": 400.0},
+                  dry_run=False,
+                  ops=[{"op": "set", "line_id": 46549, "x1": 184.5}])
+check(not r["ok"] and "redraw" in r["note"],
+      f"H: the unmoved synoptic end gets the synoptic note, got {r}")
+ok("H ok: synoptic lines on a mixed-scheme folio are judged per line", mark)
+
+mark = len(failures)
+# --- I: redraw removes and draws the line again in its synoptic style -------
+app, proj = world()
+proj.folios[500] = FakeFolio(500, 12, proj)
+old = FakeLine(46549, 500, 169.5, 345.9, 213.75, 347.5, 34, 1, frozen=True)
+proj.lines.append(old)
+r = wf.edit_lines(app, CLIENT, file_id=500, box={"y_max": 400.0},
+                  dry_run=False,
+                  ops=[{"op": "set", "line_id": 46549, "x1": 184.5,
+                        "redraw": True}])
+row = r["applied"][0]
+new = proj.folios[500].new_lines
+check(r["ok"] and row["op"] == "redraw" and "remove" in old.calls,
+      f"I: the old line is removed, got {r}")
+check(len(new) == 1 and new[0].created_as == 1
+      and ("setWireStyleSynopticID", 34) in new[0].calls
+      and new[0].pts == [184.5, 345.9, 213.75, 347.5],
+      f"I: a synoptic line in style 34 with the new start, got "
+      f"{[(ln.calls, ln.pts) for ln in new]}")
+check(row["line_id"] == new[0].lid and row["replaced_line_id"] == 46549,
+      f"I: the row reports old and new id, got {row}")
+check("Add a cable" in r.get("redraw_note", ""),
+      f"I: the result warns that a cable must be put back, got {r}")
+r = wf.edit_lines(app, CLIENT, file_id=400, dry_run=True,
+                  ops=[{"op": "set", "line_id": 30100, "x2": 170,
+                        "redraw": True}])
+check(r["plan"][0]["op"] == "set",
+      f"I: redraw is ignored on a schematic line, got {r['plan']}")
+ok("I ok: redraw replaces a synoptic line in its own style", mark)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S)")
