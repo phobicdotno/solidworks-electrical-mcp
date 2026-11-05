@@ -2423,6 +2423,80 @@ MIN_TEXT_SYMBOL_ORIGIN_SPACING = 3 * GRID_PITCH
 
 _SNAP = 0.001
 
+# Paper sizes (width, height) in mm, smallest first. A folio's sheet size is
+# not reachable through the API: the page row carries no format field
+# (probe_object_fields, 14 fields), IEwDocumentX.getEwTitleBlockX returns
+# NULL with rc 53 on an open A2 folio, and the PDF export fits every sheet
+# to the print configuration's paper (A3 and A2 folios both came out
+# 842 x 595 pt on the Mariner Standard). So the sheet is judged from the
+# folio's own geometry: drawing coordinates are paper millimetres, and
+# anything drawn past 420 mm can only be on an A2 or larger sheet.
+_PAPER_MM = (("A3", 420.0, 297.0), ("A2", 594.0, 420.0),
+             ("A1", 841.0, 594.0), ("A0", 1189.0, 841.0))
+# Drawable box per paper. A3 is the house rule (GO_BOX). A2 is the box the
+# A2 "Targabox detailed diagram" (Mariner Standard page 68) was edited in.
+# Larger papers get a 10 mm inset until a real sheet says otherwise.
+_BOX_BY_PAPER = {
+    "A3": GO_BOX,
+    "A2": {"x_min": 10.0, "x_max": 590.0, "y_min": 10.0, "y_max": 410.0},
+}
+_BOX_KEYS = ("x_min", "x_max", "y_min", "y_max")
+# A folio proven to be larger than A3 stays that size; an A3 verdict is not
+# cached because an empty A2 page reads as A3 until something is drawn on it.
+_paper_cache: dict[int, tuple] = {}
+
+
+def _folio_paper(app: Any, client: Any, fid: int,
+                 lines: list | None = None) -> tuple:
+    """(name, width_mm, height_mm) of the smallest paper holding the folio's
+    drawn geometry: line ends first, symbol origins only when the lines fit
+    on A3 (one more sweep, skipped on the common case)."""
+    if fid in _paper_cache:
+        return _paper_cache[fid]
+    mx = my = 0.0
+    try:
+        for ln in (lines if lines is not None
+                   else _folio_lines(app, client, fid)):
+            mx = max(mx, ln["x1"], ln["x2"])
+            my = max(my, ln["y1"], ln["y2"])
+    except Exception:  # noqa: BLE001
+        pass
+    small = _PAPER_MM[0]
+    if mx <= small[1] + _SNAP and my <= small[2] + _SNAP:
+        try:
+            smgr = _u(_project(app).getEwProjectSymbolManager())
+            for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid))):
+                mx = max(mx, float(_u(s.getXPosition()) or 0.0))
+                my = max(my, float(_u(s.getYPosition()) or 0.0))
+        except Exception:  # noqa: BLE001
+            pass
+    paper = _PAPER_MM[-1]
+    for p in _PAPER_MM:
+        if mx <= p[1] + _SNAP and my <= p[2] + _SNAP:
+            paper = p
+            break
+    if paper is not small:
+        _paper_cache[fid] = paper
+    return paper
+
+
+def _resolve_box(app: Any, client: Any, fid: int | None, box: dict | None,
+                 lines: list | None = None) -> dict:
+    """The drawable box for one folio.
+
+    A box giving all four sides is used as given. Otherwise the folio's
+    paper (see ``_folio_paper``) picks the default and the given sides
+    override it, so an A2 page no longer needs an explicit box on every call.
+    """
+    if box and all(k in box for k in _BOX_KEYS):
+        return {k: float(box[k]) for k in _BOX_KEYS}
+    base = GO_BOX
+    if fid is not None:
+        name, w, h = _folio_paper(app, client, int(fid), lines)
+        base = _BOX_BY_PAPER.get(name) or {
+            "x_min": 10.0, "x_max": w - 10.0, "y_min": 10.0, "y_max": h - 10.0}
+    return {**base, **(box or {})}
+
 
 def _symbol_points(s: Any) -> list:
     out = []
@@ -2528,7 +2602,7 @@ def move_symbol(app: Any, client: Any, symbol_id: int, dx: float = 0.0,
             moves.append({"line_id": ln["id"], "ends": ends, "obj": ln["obj"],
                           "from": [ln["x1"], ln["y1"], ln["x2"], ln["y2"]]})
 
-    bx = {**GO_BOX, **(box or {})}
+    bx = _resolve_box(app, client, fid, box, lines)
     after_pts = [{"x": p["x"] + dx, "y": p["y"] + dy} for p in pts]
     out_of_box = [p for p in after_pts
                   if not (bx["x_min"] - _SNAP <= p["x"] <= bx["x_max"] + _SNAP
@@ -2604,7 +2678,6 @@ def move_symbols(app: Any, client: Any, moves: list,
     """
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
-    bx = {**GO_BOX, **(box or {})}
     seen_ids = set()
     for m in moves:
         if int(m["symbol_id"]) in seen_ids:
@@ -2634,6 +2707,7 @@ def move_symbols(app: Any, client: Any, moves: list,
                      "points": _symbol_points(sym)})
 
     lines = _folio_lines(app, client, fid)      # ONE scan for the whole batch
+    bx = _resolve_box(app, client, fid, box, lines)
     for j in jobs:
         j["line_moves"] = []
         for ln in lines:
@@ -2785,7 +2859,7 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
     cmgr = _u(proj.getEwProjectComponentManager())
-    bx = {**GO_BOX, **(box or {})}
+    bx = _resolve_box(app, client, fid, box)
     gap = MIN_POINT_SPACING if min_spacing is None else float(min_spacing)
 
     pts = []
@@ -2992,7 +3066,7 @@ def place_symbol(app: Any, client: Any, tag: str, symbol_name: str,
     cid = _u(comp.getID())
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
-    bx = {**GO_BOX, **(box or {})}
+    bx = _resolve_box(app, client, row["id"], box)
     if not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
             and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP):
         raise ValueError(f"({x}, {y}) is outside the drawable box {bx}")
@@ -3160,7 +3234,7 @@ def add_text(app: Any, client: Any, text: str, x: float, y: float,
     """
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
-    bx = {**GO_BOX, **(box or {})}
+    bx = _resolve_box(app, client, row["id"], box)
     if not (bx["x_min"] - _SNAP <= x <= bx["x_max"] + _SNAP
             and bx["y_min"] - _SNAP <= y <= bx["y_max"] + _SNAP):
         raise ValueError(f"({x}, {y}) is outside the drawable box {bx}")
@@ -3319,10 +3393,11 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
         return {"ok": False,
                 "error": "PyMuPDF (fitz) is not installed; "
                          "pip install pymupdf to use check_page_ink"}
-    bx = {**GO_BOX, **(box or {})}
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
-    tmp = os.path.join(tempfile.gettempdir(),
+    bx = _resolve_box(app, client, row["id"], box)
+    paper = _folio_paper(app, client, row["id"])
+    tmp =os.path.join(tempfile.gettempdir(),
                        f"swe_ink_{row['id']}_{os.getpid()}.pdf")
     try:
         exp = export_folio_pdf(app, client, output_path=tmp, file_ids=[row["id"]])
@@ -3333,7 +3408,11 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
         try:
             pg = doc[0]
             w_pt, h_pt = pg.rect.width, pg.rect.height
+            # The export fits the sheet to the print paper (an A2 folio came
+            # out 842 pt wide), so the PDF width says nothing about the sheet.
+            # The folio's paper does; a PDF that matches it 1:1 agrees anyway.
             sw = (float(sheet_width_mm) if sheet_width_mm
+                  else paper[1] if paper
                   else _SHEET_WIDTH_MM.get(round(w_pt)))
             if not sw:
                 return {"ok": False, "folio": row,
@@ -3418,9 +3497,9 @@ def place_symbols(app: Any, client: Any, placements: list[dict],
     """
     if not placements:
         return {"ok": False, "error": "no placements given"}
-    bx = {**GO_BOX, **(box or {})}
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
+    bx = _resolve_box(app, client, row["id"], box)
 
     prepared, planned = [], []
     for i, p in enumerate(placements):
@@ -3618,9 +3697,9 @@ def add_texts(app: Any, client: Any, texts: list[dict],
     """
     if not texts:
         return {"ok": False, "error": "no texts given"}
-    bx = {**GO_BOX, **(box or {})}
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
+    bx = _resolve_box(app, client, row["id"], box)
 
     prepared = []
     for i, t in enumerate(texts):
@@ -3862,8 +3941,9 @@ def edit_lines(app: Any, client: Any, ops: list,
     fid = _u(f.getID())
     folio = _folio_row(f)
     line_diagram = folio.get("file_type_code") == 1      # kFileLineDiagram
-    bx = {**GO_BOX, **(box or {})}
-    before = {ln["id"]: ln for ln in _folio_lines(app, client, fid)}
+    lines0 = _folio_lines(app, client, fid)
+    bx = _resolve_box(app, client, fid, box, lines0)
+    before = {ln["id"]: ln for ln in lines0}
 
     def _in_box(px, py):
         return (bx["x_min"] - _SNAP <= px <= bx["x_max"] + _SNAP
