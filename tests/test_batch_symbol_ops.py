@@ -37,6 +37,9 @@ sys.path.insert(0, str(REPO / "src"))
 
 from solidworks_electrical_mcp import workflows as wf
 
+# Not a paper-size test: every folio here is A3 (see test_sheet_box.py).
+wf._folio_paper = lambda *a, **k: wf._PAPER_MM[0]
+
 failures: list[str] = []
 
 

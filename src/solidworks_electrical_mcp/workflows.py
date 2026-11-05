@@ -2443,59 +2443,66 @@ _BOX_BY_PAPER = {
 _BOX_KEYS = ("x_min", "x_max", "y_min", "y_max")
 # A folio proven to be larger than A3 stays that size; an A3 verdict is not
 # cached because an empty A2 page reads as A3 until something is drawn on it.
-_paper_cache: dict[int, tuple] = {}
+# Keyed by (project id, folio id): folio ids are per project.
+_paper_cache: dict[tuple, tuple] = {}
 
 
 def _folio_paper(app: Any, client: Any, fid: int,
                  lines: list | None = None) -> tuple:
     """(name, width_mm, height_mm) of the smallest paper holding the folio's
     drawn geometry: line ends first, symbol origins only when the lines fit
-    on A3 (one more sweep, skipped on the common case)."""
-    if fid in _paper_cache:
-        return _paper_cache[fid]
-    mx = my = 0.0
+    on A3 (one more sweep, skipped on the common case).
+
+    A failing sweep raises: falling back to A3 would quietly give an A2 page
+    the A3 box and the A3 ink scale."""
+    proj = _project(app)
     try:
-        for ln in (lines if lines is not None
-                   else _folio_lines(app, client, fid)):
-            mx = max(mx, ln["x1"], ln["x2"])
-            my = max(my, ln["y1"], ln["y2"])
-    except Exception:  # noqa: BLE001
-        pass
+        pid = _u(proj.getID())
+    except Exception:  # noqa: BLE001  (no id: cache per folio only)
+        pid = None
+    key = (pid, int(fid))
+    if key in _paper_cache:
+        return _paper_cache[key]
+    mx = my = 0.0
+    for ln in (lines if lines is not None else _folio_lines(app, client, fid)):
+        mx = max(mx, ln["x1"], ln["x2"])
+        my = max(my, ln["y1"], ln["y2"])
     small = _PAPER_MM[0]
     if mx <= small[1] + _SNAP and my <= small[2] + _SNAP:
-        try:
-            smgr = _u(_project(app).getEwProjectSymbolManager())
-            for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid))):
-                mx = max(mx, float(_u(s.getXPosition()) or 0.0))
-                my = max(my, float(_u(s.getYPosition()) or 0.0))
-        except Exception:  # noqa: BLE001
-            pass
+        smgr = _u(proj.getEwProjectSymbolManager())
+        for s in _each(client, _u(smgr.getProjectSymbolsFromFileID(fid))):
+            mx = max(mx, float(_u(s.getXPosition()) or 0.0))
+            my = max(my, float(_u(s.getYPosition()) or 0.0))
     paper = _PAPER_MM[-1]
     for p in _PAPER_MM:
         if mx <= p[1] + _SNAP and my <= p[2] + _SNAP:
             paper = p
             break
     if paper is not small:
-        _paper_cache[fid] = paper
+        _paper_cache[key] = paper
     return paper
+
+
+def _box_for_paper(paper: tuple, box: dict | None) -> dict:
+    name, w, h = paper
+    base = _BOX_BY_PAPER.get(name) or {
+        "x_min": 10.0, "x_max": w - 10.0, "y_min": 10.0, "y_max": h - 10.0}
+    return {**base, **(box or {})}
 
 
 def _resolve_box(app: Any, client: Any, fid: int | None, box: dict | None,
                  lines: list | None = None) -> dict:
     """The drawable box for one folio.
 
-    A box giving all four sides is used as given. Otherwise the folio's
-    paper (see ``_folio_paper``) picks the default and the given sides
-    override it, so an A2 page no longer needs an explicit box on every call.
+    A box giving all four sides is used as given (no sweep). Otherwise the
+    folio's paper (see ``_folio_paper``) picks the default and the given
+    sides override it, so an A2 page no longer needs an explicit box.
     """
     if box and all(k in box for k in _BOX_KEYS):
         return {k: float(box[k]) for k in _BOX_KEYS}
-    base = GO_BOX
-    if fid is not None:
-        name, w, h = _folio_paper(app, client, int(fid), lines)
-        base = _BOX_BY_PAPER.get(name) or {
-            "x_min": 10.0, "x_max": w - 10.0, "y_min": 10.0, "y_max": h - 10.0}
-    return {**base, **(box or {})}
+    if fid is None:
+        return {**GO_BOX, **(box or {})}
+    return _box_for_paper(_folio_paper(app, client, int(fid), lines), box)
 
 
 def _symbol_points(s: Any) -> list:
@@ -2859,7 +2866,8 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
     proj = _project(app)
     smgr = _u(proj.getEwProjectSymbolManager())
     cmgr = _u(proj.getEwProjectComponentManager())
-    bx = _resolve_box(app, client, fid, box)
+    flines = _folio_lines(app, client, fid)
+    bx = _resolve_box(app, client, fid, box, flines)
     gap = MIN_POINT_SPACING if min_spacing is None else float(min_spacing)
 
     pts = []
@@ -2913,7 +2921,7 @@ def check_drawing_rules(app: Any, client: Any, page: str | int | None = None,
     out = [{"kind": "connection point", "tag": p["tag"],
             "symbol_id": p["symbol_id"], "x": p["x"], "y": p["y"]}
            for p in pts if outside(p["x"], p["y"])]
-    for ln in _folio_lines(app, client, fid):
+    for ln in flines:
         for tag, x, y in (("start", ln["x1"], ln["y1"]),
                           ("end", ln["x2"], ln["y2"])):
             if outside(x, y):
@@ -3361,10 +3369,6 @@ def delete_location(app: Any, client: Any, location_id: int) -> dict:
             "rc_name": _rc_name(rc)}
 
 
-# Sheet widths in millimetres, keyed by the PDF page width in points.
-_SHEET_WIDTH_MM = {1191: 420.0, 842: 297.0, 1684: 594.0, 2384: 841.0}
-
-
 def check_page_ink(app: Any, client: Any, page: str | int | None = None,
                    file_id: int | None = None, box: dict | None = None,
                    sheet_width_mm: float | None = None,
@@ -3395,9 +3399,14 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
                          "pip install pymupdf to use check_page_ink"}
     f = find_folio(app, client, page=page, file_id=file_id)
     row = _folio_row(f)
-    bx = _resolve_box(app, client, row["id"], box)
-    paper = _folio_paper(app, client, row["id"])
-    tmp =os.path.join(tempfile.gettempdir(),
+    # One paper sweep serves both the box and the ink scale; none at all
+    # when the caller gives the whole box and the sheet width.
+    full = bool(box) and all(k in box for k in _BOX_KEYS)
+    paper = (None if full and sheet_width_mm
+             else _folio_paper(app, client, row["id"]))
+    bx = ({k: float(box[k]) for k in _BOX_KEYS} if full
+          else _box_for_paper(paper, box))
+    tmp = os.path.join(tempfile.gettempdir(),
                        f"swe_ink_{row['id']}_{os.getpid()}.pdf")
     try:
         exp = export_folio_pdf(app, client, output_path=tmp, file_ids=[row["id"]])
@@ -3411,13 +3420,7 @@ def check_page_ink(app: Any, client: Any, page: str | int | None = None,
             # The export fits the sheet to the print paper (an A2 folio came
             # out 842 pt wide), so the PDF width says nothing about the sheet.
             # The folio's paper does; a PDF that matches it 1:1 agrees anyway.
-            sw = (float(sheet_width_mm) if sheet_width_mm
-                  else paper[1] if paper
-                  else _SHEET_WIDTH_MM.get(round(w_pt)))
-            if not sw:
-                return {"ok": False, "folio": row,
-                        "error": f"unknown sheet size {w_pt:.0f}x{h_pt:.0f} pt; "
-                                 "pass sheet_width_mm"}
+            sw = float(sheet_width_mm) if sheet_width_mm else paper[1]
             s = w_pt / sw
             rects = [p["rect"] for p in pg.get_drawings()]
         finally:

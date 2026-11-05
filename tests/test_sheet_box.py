@@ -17,6 +17,8 @@ Cases:
   D. an empty folio -> GO_BOX and NOT cached (it may become A2 later)
   E. a symbol origin past 420 mm with short lines -> A2
   F. check_page_ink on an A2 folio exported to 842 pt measures A2 millimetres
+  G. a failing sweep raises (no silent A3); a full box needs no sweep
+  H. the cache is keyed per project, so folio ids never share a verdict
 
 Run directly:
     .venv/Scripts/python.exe tests/test_sheet_box.py
@@ -88,7 +90,7 @@ check(bx == wf.GO_BOX, f"A: A3 geometry should give GO_BOX, got {bx}")
 wf._paper_cache.clear()
 bx = with_folio([line(20, 30, 575, 390)], [], lambda: wf._resolve_box(None, None, 2, None))
 check(bx == A2, f"B: a line to x 575 should give the A2 box, got {bx}")
-check(2 in wf._paper_cache, "B: an A2 verdict should be cached")
+check((None, 2) in wf._paper_cache, "B: an A2 verdict should be cached")
 bx = with_folio([], [], lambda: wf._resolve_box(None, None, 2, None))
 check(bx == A2, f"B: cached A2 must survive an empty re-read, got {bx}")
 
@@ -104,13 +106,60 @@ check(bx["x_max"] == 500 and bx["x_min"] == A2["x_min"] and bx["y_max"] == A2["y
 wf._paper_cache.clear()
 bx = with_folio([], [], lambda: wf._resolve_box(None, None, 3, None))
 check(bx == wf.GO_BOX, f"D: empty folio should give GO_BOX, got {bx}")
-check(3 not in wf._paper_cache, "D: an A3 verdict must not be cached")
+check((None, 3) not in wf._paper_cache, "D: an A3 verdict must not be cached")
 
 # --- E ---------------------------------------------------------------------
 wf._paper_cache.clear()
 bx = with_folio([line(50, 100, 100, 100)], [Sym(480, 200)],
                 lambda: wf._resolve_box(None, None, 4, None))
 check(bx == A2, f"E: a symbol at x 480 should give the A2 box, got {bx}")
+
+# --- G: a failing sweep raises instead of quietly giving A3 ----------------
+wf._paper_cache.clear()
+
+
+def broken_lines(app, client, fid):
+    raise RuntimeError("COM gone")
+
+
+o_lines, o_proj = wf._folio_lines, wf._project
+wf._folio_lines, wf._project = broken_lines, (lambda app: Proj([]))
+try:
+    wf._resolve_box(None, None, 6, None)
+    check(False, "G: a failing line sweep must raise, not fall back to A3")
+except RuntimeError:
+    pass
+finally:
+    wf._folio_lines, wf._project = o_lines, o_proj
+bx = wf._resolve_box(None, None, 6, full)
+check(bx == {k: float(v) for k, v in full.items()},
+      "G: a full box needs no sweep, so it works even when the sweep would fail")
+
+# --- H: the cache is per project -------------------------------------------
+wf._paper_cache.clear()
+
+
+class IdProj(Proj):
+    def __init__(self, pid, syms):
+        super().__init__(syms)
+        self.pid = pid
+
+    def getID(self):
+        return self.pid
+
+
+o_lines, o_proj, o_each = wf._folio_lines, wf._project, wf._each
+wf._each = lambda client, arr: list(arr or [])
+try:
+    wf._folio_lines = lambda app, client, fid: [line(20, 30, 575, 390)]
+    wf._project = lambda app: IdProj(23, [])
+    check(wf._resolve_box(None, None, 7, None) == A2, "H: project 23 folio 7 is A2")
+    wf._folio_lines = lambda app, client, fid: [line(50, 100, 300, 200)]
+    wf._project = lambda app: IdProj(24, [])
+    check(wf._resolve_box(None, None, 7, None) == wf.GO_BOX,
+          "H: folio 7 of project 24 must not inherit project 23's A2 verdict")
+finally:
+    wf._folio_lines, wf._project, wf._each = o_lines, o_proj, o_each
 
 # --- F ---------------------------------------------------------------------
 try:
